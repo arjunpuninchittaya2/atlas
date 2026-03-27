@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import Spinner from '../components/Spinner'
 import { exchangeNotionCode } from '../lib/api'
@@ -8,11 +8,10 @@ export default function AuthCallback() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [error, setError] = useState<string | null>(null)
+  const code = useMemo(() => searchParams.get('code'), [searchParams])
 
   useEffect(() => {
-    const code = searchParams.get('code')
     if (!code) {
-      setError('Missing authorization code.')
       return
     }
 
@@ -25,7 +24,16 @@ export default function AuthCallback() {
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : 'Unable to connect to Notion.')
       })
-  }, [navigate, searchParams])
+  }, [code, navigate])
+
+  if (!code) {
+    return (
+      <div className='centered-message'>
+        <p>Missing authorization code.</p>
+        <Link to='/'>Try again</Link>
+      </div>
+    )
+  }
 
   if (error) {
     return (
