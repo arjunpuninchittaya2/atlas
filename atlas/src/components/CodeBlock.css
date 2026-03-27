@@ -1,0 +1,26 @@
+.code-block-wrap {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  margin: 1rem 0;
+}
+
+.copy-btn {
+  position: sticky;
+  top: 0.5rem;
+  float: right;
+  margin: 0.5rem;
+  z-index: 1;
+  padding: 0.3rem 0.6rem;
+}
+
+.code-block-wrap pre {
+  margin: 0;
+  padding: 1rem;
+  font-family: 'Geist Mono', monospace;
+  font-size: 13px;
+  white-space: pre;
+  overflow-x: auto;
+  line-height: 1.45;
+}
