@@ -12,8 +12,12 @@
 		"cf-typegen": "wrangler types"
 	},
 	"dependencies": {
+		"@fontsource/geist": "^5.2.8",
+		"@fontsource/geist-mono": "^5.2.7",
+		"lucide-react": "^1.7.0",
 		"react": "^19.2.0",
-		"react-dom": "^19.2.0"
+		"react-dom": "^19.2.0",
+		"react-router-dom": "^7.13.2"
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.30.1",
