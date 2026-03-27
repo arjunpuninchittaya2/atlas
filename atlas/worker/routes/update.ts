@@ -153,7 +153,13 @@ export async function handleUpdate(context: ApiContext) {
     for (const entry of items) {
       const normalized = normalizeItem(entry.item, entry.isAnnouncement)
       const hash = await shortHash(
-        `${normalized.title}${normalized.dueDate?.year ?? ''}${normalized.dueDate?.month ?? ''}${normalized.dueDate?.day ?? ''}${normalized.description}`,
+        [
+          normalized.title,
+          String(normalized.dueDate?.year ?? ''),
+          String(normalized.dueDate?.month ?? ''),
+          String(normalized.dueDate?.day ?? ''),
+          normalized.description,
+        ].join('|'),
       )
 
       const seenRecord = await kvGetJson<SeenRecord>(context.env.ATLAS_KV, seenKey(user.userId, normalized.id))

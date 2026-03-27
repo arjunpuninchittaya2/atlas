@@ -1,5 +1,5 @@
 import type { ApiContext } from '../index'
-import { kvGetJson, kvPutJson, userKey, type UserRecord } from '../kv'
+import { kvPutJson, userKey } from '../kv'
 import { createNotionDatabaseForUser } from '../notion'
 
 function json(body: unknown, status = 200) {
@@ -68,8 +68,3 @@ export async function handleSetupInfo(context: ApiContext) {
   return json({ apiKey: context.apiKey, updateUrl })
 }
 
-export async function getUserFromContext(context: ApiContext): Promise<UserRecord | null> {
-  if (!context.user) return null
-  const user = await kvGetJson<UserRecord>(context.env.ATLAS_KV, userKey(context.user.userId))
-  return user
-}

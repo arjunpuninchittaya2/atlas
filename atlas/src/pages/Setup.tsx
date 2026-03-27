@@ -12,6 +12,9 @@ type SetupInfoState = {
   updateUrl: string
 }
 
+const VERIFICATION_TIMEOUT_MS = 180_000
+const VERIFICATION_POLL_INTERVAL_MS = 3_000
+
 const SCRIPT_TEMPLATE = `const NOTION_SYNC_API_KEY = "__API_KEY__";
 const NOTION_SYNC_URL = "__UPDATE_URL__";
 const NOTION_SYNC_ENABLED = true;
@@ -125,18 +128,18 @@ export default function Setup() {
             window.clearInterval(interval)
           }
 
-          if (Date.now() - startedAt > 180_000) {
+          if (Date.now() - startedAt > VERIFICATION_TIMEOUT_MS) {
             setVerifyTimeout(true)
             window.clearInterval(interval)
           }
         })
         .catch(() => {
-          if (Date.now() - startedAt > 180_000) {
+          if (Date.now() - startedAt > VERIFICATION_TIMEOUT_MS) {
             setVerifyTimeout(true)
             window.clearInterval(interval)
           }
         })
-    }, 3000)
+    }, VERIFICATION_POLL_INTERVAL_MS)
 
     return () => window.clearInterval(interval)
   }, [activeStep, verified])

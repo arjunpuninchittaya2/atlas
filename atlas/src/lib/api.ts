@@ -1,5 +1,6 @@
 import { getApiKey } from './storage'
 
+// Empty fallback intentionally uses relative paths in local dev through Vite proxy.
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
 function getApiUrl(path: string) {

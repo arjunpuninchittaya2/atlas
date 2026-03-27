@@ -14,13 +14,13 @@
     "nodejs_compat"
   ],
   "vars": {
-    "NOTION_CLIENT_ID": "",
-    "NOTION_REDIRECT_URI": ""
+    "NOTION_CLIENT_ID": "REPLACE_WITH_NOTION_CLIENT_ID",
+    "NOTION_REDIRECT_URI": "REPLACE_WITH_NOTION_REDIRECT_URI"
   },
   "kv_namespaces": [
     {
       "binding": "ATLAS_KV",
-      "id": "ATLAS_KV_NAMESPACE_ID"
+      "id": "REPLACE_WITH_ATLAS_KV_NAMESPACE_ID"
     }
   ]
 }

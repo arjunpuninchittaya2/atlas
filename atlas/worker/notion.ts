@@ -116,6 +116,7 @@ function toUtcIsoInTimeZone(
 ) {
   let guess = Date.UTC(dueDate.year, dueDate.month - 1, dueDate.day, dueTime.hours, dueTime.minutes, 0)
 
+  // A few adjustment passes are enough to converge across timezone and DST boundaries.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const parts = formatLocalParts(new Date(guess), timeZone)
     const target = Date.UTC(dueDate.year, dueDate.month - 1, dueDate.day, dueTime.hours, dueTime.minutes, 0)
