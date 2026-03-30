@@ -1,5 +1,5 @@
 import type { ApiContext } from '../index'
-import { kvPutJson, userKey, type Assignment, type Course, type UserRecord } from '../types'
+import { kvPutJson, userKey, type Assignment, type Course } from '../types'
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {

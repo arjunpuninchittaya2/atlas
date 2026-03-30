@@ -6,22 +6,22 @@ export default function Landing() {
     <main className='landing'>
       <section className='hero'>
         <h1>
-          Your assignments.
+          Your school work.
           <br />
-          In Notion.
+          Organized.
         </h1>
-        <p>Sync Google Classroom coursework and announcements into your Notion workspace automatically.</p>
-        <Link to='/auth' className='btn-primary'>
-          Connect Notion →
+        <p>Manage your assignments, courses, and schedule all in one place.</p>
+        <Link to='/login' className='btn-primary'>
+          Get Started →
         </Link>
-        <small>Free. No account required. Works with any Notion workspace.</small>
+        <small>Free. Simple productivity for students.</small>
       </section>
 
       <section className='how-it-works'>
         {[
-          ['1', 'Connect your Notion workspace', 'Authorize ATLAS to create and update your assignments database.'],
-          ['2', 'Copy a script into Google Apps Script', 'Paste one script once to connect your Classroom data feed.'],
-          ['3', 'Assignments sync automatically', 'New and updated coursework appears in your Notion database every hour.'],
+          ['1', 'Create an account', 'Sign up with your email in seconds.'],
+          ['2', 'Add your courses', 'Organize your classes and track assignments.'],
+          ['3', 'Stay on top of deadlines', 'Never miss an assignment with a clean, simple dashboard.'],
         ].map(([number, title, body]) => (
           <article key={number} className='step-card'>
             <div className='step-number'>{number}</div>
@@ -33,9 +33,6 @@ export default function Landing() {
 
       <footer>
         <span>© {new Date().getFullYear()} ATLAS</span>
-        <a href='https://developers.notion.com/' target='_blank' rel='noreferrer'>
-          Notion integration docs
-        </a>
       </footer>
     </main>
   )
