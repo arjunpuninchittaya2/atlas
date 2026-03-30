@@ -1,8 +1,14 @@
-import { apiKeyKey, kvGetJson, userKey, type ApiKeyRecord, type UserRecord } from './kv'
-import { handleAuthCallback, handleAuthNotion } from './routes/auth'
-import { handleDashboardCourses, handleDashboardGet } from './routes/dashboard'
-import { handleSetupCreateDb, handleSetupInfo, handleSetupVerify } from './routes/setup'
-import { handleUpdate } from './routes/update'
+import { apiKeyKey, kvGetJson, userKey, type ApiKeyRecord, type UserRecord } from './types'
+import { handleRegister, handleLogin, handleGetProfile } from './routes/new-auth'
+import {
+  handleGetDashboard,
+  handleCreateCourse,
+  handleUpdateCourse,
+  handleDeleteCourse,
+  handleCreateAssignment,
+  handleUpdateAssignment,
+  handleDeleteAssignment,
+} from './routes/new-dashboard'
 
 export type ApiContext = {
   request: Request
@@ -15,7 +21,7 @@ function withCors(response: Response) {
   const headers = new Headers(response.headers)
   headers.set('Access-Control-Allow-Origin', '*')
   headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -52,12 +58,15 @@ async function getAuthedUser(request: Request, env: Env) {
 
 function requiresAuth(pathname: string) {
   return [
-    '/api/setup/create-db',
-    '/api/setup/verify',
-    '/api/setup-info',
+    '/api/profile',
     '/api/dashboard',
-    '/api/dashboard/courses',
-  ].includes(pathname)
+    '/api/courses',
+    '/api/courses/update',
+    '/api/courses/delete',
+    '/api/assignments',
+    '/api/assignments/update',
+    '/api/assignments/delete',
+  ].some(path => pathname.startsWith(path))
 }
 
 export default {
@@ -79,22 +88,26 @@ export default {
 
     if (url.pathname === '/health' && request.method === 'GET') {
       response = json({ ok: true })
-    } else if (url.pathname === '/api/auth/notion' && request.method === 'GET') {
-      response = await handleAuthNotion(context)
-    } else if (url.pathname === '/api/auth/callback') {
-      response = await handleAuthCallback(context)
-    } else if (url.pathname === '/api/setup/create-db') {
-      response = await handleSetupCreateDb(context)
-    } else if (url.pathname === '/api/setup/verify' && request.method === 'GET') {
-      response = await handleSetupVerify(context)
-    } else if (url.pathname === '/api/setup-info' && request.method === 'GET') {
-      response = await handleSetupInfo(context)
+    } else if (url.pathname === '/api/auth/register' && request.method === 'POST') {
+      response = await handleRegister(context)
+    } else if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+      response = await handleLogin(context)
+    } else if (url.pathname === '/api/profile' && request.method === 'GET') {
+      response = await handleGetProfile(context)
     } else if (url.pathname === '/api/dashboard' && request.method === 'GET') {
-      response = await handleDashboardGet(context)
-    } else if (url.pathname === '/api/dashboard/courses') {
-      response = await handleDashboardCourses(context)
-    } else if (url.pathname === '/update') {
-      response = await handleUpdate(context)
+      response = await handleGetDashboard(context)
+    } else if (url.pathname === '/api/courses' && request.method === 'POST') {
+      response = await handleCreateCourse(context)
+    } else if (url.pathname === '/api/courses/update' && request.method === 'PATCH') {
+      response = await handleUpdateCourse(context)
+    } else if (url.pathname === '/api/courses/delete' && request.method === 'DELETE') {
+      response = await handleDeleteCourse(context)
+    } else if (url.pathname === '/api/assignments' && request.method === 'POST') {
+      response = await handleCreateAssignment(context)
+    } else if (url.pathname === '/api/assignments/update' && request.method === 'PATCH') {
+      response = await handleUpdateAssignment(context)
+    } else if (url.pathname === '/api/assignments/delete' && request.method === 'DELETE') {
+      response = await handleDeleteAssignment(context)
     } else {
       response = json({ error: 'Not found' }, 404)
     }
