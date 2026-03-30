@@ -9,6 +9,9 @@
     "directory": "atlas/dist/client",
     "not_found_handling": "single-page-application"
   },
+  "build": {
+    "command": "npm --prefix atlas ci && npm --prefix atlas run build"
+  },
   "compatibility_flags": [
     "nodejs_compat"
   ]
