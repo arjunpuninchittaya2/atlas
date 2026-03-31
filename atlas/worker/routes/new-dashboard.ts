@@ -189,6 +189,7 @@ export async function handleUpdateAssignment(context: ApiContext) {
     id?: string
     title?: string
     description?: string
+    courseId?: string
     dueDate?: string
     dueTime?: string
     status?: Assignment['status']
@@ -207,6 +208,17 @@ export async function handleUpdateAssignment(context: ApiContext) {
   const assignment = context.user.data.assignments[assignmentIndex]!
   if (body.title !== undefined) assignment.title = body.title
   if (body.description !== undefined) assignment.description = body.description
+  if (body.courseId !== undefined) {
+    const normalizedCourseId = body.courseId.trim()
+    if (!normalizedCourseId) {
+      return json({ error: 'Course ID required' }, 400)
+    }
+    const courseExists = context.user.data.courses.some(c => c.id === normalizedCourseId)
+    if (!courseExists) {
+      return json({ error: 'Course not found' }, 404)
+    }
+    assignment.courseId = normalizedCourseId
+  }
   if (body.dueDate !== undefined) assignment.dueDate = body.dueDate
   if (body.dueTime !== undefined) assignment.dueTime = body.dueTime
   if (body.status !== undefined) assignment.status = body.status

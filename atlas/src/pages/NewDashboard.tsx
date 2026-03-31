@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import {
   BookOpen,
   Calendar,
+  CalendarDays,
   ClipboardList,
+  ChevronDown,
   Edit3,
   Goal,
   Home,
@@ -20,10 +22,22 @@ import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { DataTable } from '@/components/ui/data-table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Calendar as DateCalendar } from '@/components/ui/calendar'
+import { type ColumnDef } from '@tanstack/react-table'
+import { format } from 'date-fns'
 import {
   createAssignment,
   createCourse,
-  deleteAssignment,
   deleteCourse,
   getDashboard,
   logout,
@@ -76,6 +90,14 @@ type NavItem = {
   id: ViewId
   icon: LucideIcon
   label: string
+}
+
+type AssignmentDraft = {
+  courseId: string
+  title: string
+  dueDate: string | null
+  link: string | null
+  status: Assignment['status']
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -134,20 +156,50 @@ function isWithinTwoWeeks(assignment: Assignment) {
   return reference >= cutoff
 }
 
+function parseDateInput(value: string | null) {
+  if (!value) return undefined
+  const parsed = new Date(`${value}T12:00:00Z`)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
+}
+
+function toAssignmentDraft(assignment: Assignment): AssignmentDraft {
+  return {
+    courseId: assignment.courseId,
+    title: assignment.title,
+    dueDate: assignment.dueDate,
+    link: assignment.link,
+    status: assignment.status,
+  }
+}
+
+function normalizeAssignmentUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return { ok: true as const, value: null as string | null }
+  try {
+    const normalized = new URL(trimmed).toString()
+    return { ok: true as const, value: normalized }
+  } catch {
+    return { ok: false as const }
+  }
+}
+
+function formatStatusLabel(status: Assignment['status']) {
+  return status
+    .toLowerCase()
+    .split('_')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
 export default function NewDashboard() {
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [activeView, setActiveView] = useState<ViewId>('overview')
+  const [activeView, setActiveView] = useState<ViewId>('assignments')
   const [searchQuery, setSearchQuery] = useState('')
   const [courseName, setCourseName] = useState('')
   const [courseColor, setCourseColor] = useState('')
-  const [assignmentTitle, setAssignmentTitle] = useState('')
-  const [assignmentCourseId, setAssignmentCourseId] = useState('')
-  const [assignmentDueDate, setAssignmentDueDate] = useState('')
-  const [assignmentType, setAssignmentType] = useState<Assignment['type']>('ASSIGNMENT')
   const [noteTitle, setNoteTitle] = useState('')
   const [noteBody, setNoteBody] = useState('')
-  const [todoTitle, setTodoTitle] = useState('')
   const [goalTitle, setGoalTitle] = useState('')
   const [notes, setNotes] = useState<Note[]>([])
   const [todos, setTodos] = useState<TodoItem[]>([])
@@ -160,7 +212,7 @@ export default function NewDashboard() {
 
   const [courseSort, setCourseSort] = useState<'name-asc' | 'name-desc' | 'created-desc'>('name-asc')
   const [schoolSort, setSchoolSort] = useState<'due-asc' | 'due-desc' | 'created-desc' | 'title-asc'>('due-asc')
-  const [todoSort, setTodoSort] = useState<'created-desc' | 'title-asc' | 'status'>('created-desc')
+  const [mainDueSort, setMainDueSort] = useState<'due-asc' | 'due-desc'>('due-asc')
   const [noteSort, setNoteSort] = useState<'updated-desc' | 'title-asc'>('updated-desc')
   const [goalSort, setGoalSort] = useState<'progress-desc' | 'title-asc'>('progress-desc')
   const [focusSort, setFocusSort] = useState<'newest' | 'oldest' | 'minutes-desc'>('newest')
@@ -171,6 +223,7 @@ export default function NewDashboard() {
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
   const [selectedDateKey, setSelectedDateKey] = useState(formatDateKey(new Date()))
+  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, AssignmentDraft>>({})
 
   const navigate = useNavigate()
 
@@ -250,16 +303,6 @@ export default function NewDashboard() {
     return arr
   }, [data, courseSort])
 
-  const sortedTodos = useMemo(() => {
-    const arr = [...todos]
-    arr.sort((a, b) => {
-      if (todoSort === 'title-asc') return a.title.localeCompare(b.title)
-      if (todoSort === 'status') return Number(a.done) - Number(b.done)
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    })
-    return arr
-  }, [todos, todoSort])
-
   const sortedNotes = useMemo(() => {
     const arr = [...notes]
     arr.sort((a, b) => {
@@ -307,6 +350,41 @@ export default function NewDashboard() {
     })
     return arr
   }, [assignmentsByDate, selectedDateKey, calendarSort])
+
+  const mainAssignmentRows = useMemo(() => {
+    const cutoff = toStartOfDay(new Date())
+    cutoff.setDate(cutoff.getDate() - 2)
+
+    const rows = (data?.assignments ?? []).filter(assignment => {
+      if (assignment.type !== 'ASSIGNMENT' || !assignment.dueDate) return false
+      return toStartOfDay(new Date(assignment.dueDate)) >= cutoff
+    })
+
+    rows.sort((a, b) => {
+      const da = new Date(a.dueDate as string).getTime()
+      const db = new Date(b.dueDate as string).getTime()
+      return mainDueSort === 'due-desc' ? db - da : da - db
+    })
+
+    return rows
+  }, [data, mainDueSort])
+
+  useEffect(() => {
+    setAssignmentDrafts(prev => {
+      const next: Record<string, AssignmentDraft> = {}
+      let changed = false
+      for (const assignment of mainAssignmentRows) {
+        if (prev[assignment.id]) {
+          next[assignment.id] = prev[assignment.id]
+        } else {
+          next[assignment.id] = toAssignmentDraft(assignment)
+          changed = true
+        }
+      }
+      if (Object.keys(prev).length !== Object.keys(next).length) changed = true
+      return changed ? next : prev
+    })
+  }, [mainAssignmentRows])
 
   const plannerBuckets = useMemo(() => {
     const result: Record<Assignment['status'], Assignment[]> = {
@@ -369,26 +447,233 @@ export default function NewDashboard() {
     }
   }
 
-  const handleCreateAssignment = async () => {
-    if (!data || !assignmentTitle.trim() || !assignmentCourseId) return
+  const handleCreateAssignmentFromMainList = async () => {
+    if (!data) return
+    const defaultCourseId = data.courses.find(course => course.enabled)?.id ?? data.courses[0]?.id
+    if (!defaultCourseId) {
+      setError('No courses available. Create a course before adding an assignment')
+      return
+    }
+
     setSaving(true)
     setError('')
     try {
       const result = await createAssignment({
-        title: assignmentTitle.trim(),
-        courseId: assignmentCourseId,
-        dueDate: assignmentDueDate || undefined,
-        type: assignmentType,
+        title: 'Untitled assignment',
+        courseId: defaultCourseId,
+        dueDate: formatDateKey(new Date()),
+        type: 'ASSIGNMENT',
       })
       setData({ ...data, assignments: [result.assignment, ...data.assignments] })
-      setAssignmentTitle('')
-      setAssignmentDueDate('')
+      setActiveView('assignments')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create assignment')
     } finally {
       setSaving(false)
     }
   }
+
+  const getStatusBadgeVariant = (status: Assignment['status']) => {
+    if (status === 'COMPLETED') return 'secondary'
+    if (status === 'IN_PROGRESS') return 'default'
+    return 'outline'
+  }
+
+  const patchAssignmentDraft = (assignmentId: string, patch: Partial<AssignmentDraft>) => {
+    setAssignmentDrafts(prev => {
+      const source = mainAssignmentRows.find(item => item.id === assignmentId)
+      if (!source && !prev[assignmentId]) return prev
+      const base = prev[assignmentId] ?? toAssignmentDraft(source!)
+      return { ...prev, [assignmentId]: { ...base, ...patch } }
+    })
+  }
+
+  const persistAssignmentPatch = async (assignmentId: string, patch: Partial<AssignmentDraft>) => {
+    if (!data) return
+    setSaving(true)
+    setError('')
+    try {
+      const payload: Partial<Assignment> = {}
+      if (patch.courseId !== undefined) payload.courseId = patch.courseId
+      if (patch.title !== undefined) payload.title = patch.title
+      if (patch.dueDate !== undefined) payload.dueDate = patch.dueDate
+      if (patch.link !== undefined) payload.link = patch.link
+      if (patch.status !== undefined) payload.status = patch.status
+
+      const result = await updateAssignment(assignmentId, payload)
+      setData({
+        ...data,
+        assignments: data.assignments.map(item => (item.id === assignmentId ? result.assignment : item)),
+      })
+      patchAssignmentDraft(assignmentId, toAssignmentDraft(result.assignment))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update assignment')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const assignmentColumns: ColumnDef<Assignment>[] = [
+      {
+        accessorKey: 'courseId',
+        header: 'Course',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <Select
+              value={draft.courseId}
+              onValueChange={value => {
+                patchAssignmentDraft(assignment.id, { courseId: value })
+                void persistAssignmentPatch(assignment.id, { courseId: value })
+              }}
+            >
+              <SelectTrigger className='h-9 min-w-[160px]'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {data?.courses.map(course => (
+                  <SelectItem key={course.id} value={course.id}>
+                    {course.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )
+        },
+      },
+      {
+        accessorKey: 'title',
+        header: 'Title',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <Input
+              value={draft.title}
+              onChange={event => {
+                setError('')
+                patchAssignmentDraft(assignment.id, { title: event.target.value })
+              }}
+              onBlur={() => {
+                const title = draft.title.trim()
+                if (!title) {
+                  setError('Assignment title cannot be empty')
+                  patchAssignmentDraft(assignment.id, { title: assignment.title })
+                  return
+                }
+                setError('')
+                void persistAssignmentPatch(assignment.id, { title })
+              }}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur()
+                }
+              }}
+              className='h-9 min-w-[220px]'
+            />
+          )
+        },
+      },
+      {
+        accessorKey: 'dueDate',
+        header: () => (
+          <Button
+            variant='ghost'
+            className='h-8 px-2'
+            onClick={() => setMainDueSort(prev => (prev === 'due-asc' ? 'due-desc' : 'due-asc'))}
+          >
+            Due Date
+            <ChevronDown className={cn('ml-1 h-4 w-4 transition-transform', mainDueSort === 'due-desc' && 'rotate-180')} />
+          </Button>
+        ),
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          const selectedDate = parseDateInput(draft.dueDate)
+          return (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant='outline' className='h-9 w-[190px] justify-between text-left font-normal'>
+                  {selectedDate ? format(selectedDate, 'PPP') : 'Pick a date'}
+                  <Calendar className='h-4 w-4 opacity-60' />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className='w-auto p-0' align='start'>
+                <DateCalendar
+                  mode='single'
+                  selected={selectedDate}
+                  onSelect={date => {
+                    const dueDate = date ? formatDateKey(date) : null
+                    patchAssignmentDraft(assignment.id, { dueDate })
+                    void persistAssignmentPatch(assignment.id, { dueDate })
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+          )
+        },
+      },
+      {
+        accessorKey: 'link',
+        header: 'Link',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <Input
+              value={draft.link ?? ''}
+              placeholder='https://example.com'
+              onChange={event => {
+                setError('')
+                patchAssignmentDraft(assignment.id, { link: event.target.value || null })
+              }}
+              onBlur={() => {
+                const normalized = normalizeAssignmentUrl(draft.link ?? '')
+                if (!normalized.ok) {
+                  setError('Assignment link must be a valid URL (e.g., https://example.com)')
+                  patchAssignmentDraft(assignment.id, { link: assignment.link })
+                  return
+                }
+                setError('')
+                void persistAssignmentPatch(assignment.id, { link: normalized.value })
+              }}
+              className='h-9 min-w-[260px]'
+            />
+          )
+        },
+      },
+      {
+        accessorKey: 'status',
+        header: 'Status',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <div className='flex items-center gap-2'>
+              <Badge variant={getStatusBadgeVariant(draft.status)}>{formatStatusLabel(draft.status)}</Badge>
+              <Select
+                value={draft.status}
+                onValueChange={value => {
+                  const status = value as Assignment['status']
+                  patchAssignmentDraft(assignment.id, { status })
+                  void persistAssignmentPatch(assignment.id, { status })
+                }}
+              >
+                <SelectTrigger className='h-9 w-[150px]'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='NOT_STARTED'>{formatStatusLabel('NOT_STARTED')}</SelectItem>
+                  <SelectItem value='IN_PROGRESS'>{formatStatusLabel('IN_PROGRESS')}</SelectItem>
+                  <SelectItem value='COMPLETED'>{formatStatusLabel('COMPLETED')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )
+        },
+      },
+    ]
 
   const monthDays = useMemo(() => {
     const first = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1)
@@ -496,11 +781,32 @@ export default function NewDashboard() {
         {activeView === 'assignments' && (
           <>
             <h1 className='text-3xl font-light'>Assignments</h1>
-            <Card><CardHeader><CardTitle className='text-lg font-normal'>Create School Assignment</CardTitle></CardHeader><CardContent className='grid grid-cols-1 md:grid-cols-5 gap-3'><Input placeholder='Assignment title' value={assignmentTitle} onChange={e => setAssignmentTitle(e.target.value)} /><select className='h-10 rounded-md border border-input bg-background px-3' value={assignmentCourseId} onChange={e => setAssignmentCourseId(e.target.value)}><option value=''>Select course</option>{data.courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><Input type='date' value={assignmentDueDate} onChange={e => setAssignmentDueDate(e.target.value)} /><select className='h-10 rounded-md border border-input bg-background px-3' value={assignmentType} onChange={e => setAssignmentType(e.target.value as Assignment['type'])}><option value='ASSIGNMENT'>Assignment</option><option value='QUIZ'>Quiz</option><option value='MATERIAL'>Material</option><option value='ANNOUNCEMENT'>Announcement</option></select><Button disabled={saving || !assignmentTitle.trim() || !assignmentCourseId} onClick={handleCreateAssignment}><Plus className='w-4 h-4 mr-2' />Add</Button></CardContent></Card>
-            <div className='grid grid-cols-1 xl:grid-cols-2 gap-4'>
-              <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>School Assignments</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={schoolSort} onChange={e => setSchoolSort(e.target.value as typeof schoolSort)}><option value='due-asc'>Due asc</option><option value='due-desc'>Due desc</option><option value='created-desc'>Newest</option><option value='title-asc'>Title A-Z</option></select></CardTitle></CardHeader><CardContent className='space-y-3'>{visibleSchoolAssignments.map(a => <div key={a.id} className='border border-neutral-800 rounded-lg p-3 flex items-center justify-between gap-3'><div><p className='font-medium'>{a.title}</p><p className='text-xs text-neutral-400'>{getCourseById(a.courseId)?.name} • {a.dueDate || 'No due date'} • {a.type}</p></div><div className='flex items-center gap-2'><Button size='sm' variant='outline' onClick={() => handleToggleAssignment(a)}>{a.status === 'COMPLETED' ? 'Reopen' : 'Complete'}</Button><Button size='sm' variant='destructive' onClick={async () => { await deleteAssignment(a.id); setData(prev => prev ? ({ ...prev, assignments: prev.assignments.filter(x => x.id !== a.id) }) : prev) }}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div></div>)}</CardContent></Card>
-              <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>Personal Todo Items</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={todoSort} onChange={e => setTodoSort(e.target.value as typeof todoSort)}><option value='created-desc'>Newest</option><option value='title-asc'>Title A-Z</option><option value='status'>Status</option></select></CardTitle></CardHeader><CardContent className='space-y-3'><div className='flex gap-2'><Input placeholder='Add personal todo' value={todoTitle} onChange={e => setTodoTitle(e.target.value)} /><Button onClick={() => { if (!todoTitle.trim()) return; setTodos(prev => [{ id: crypto.randomUUID(), title: todoTitle.trim(), done: false, createdAt: new Date().toISOString() }, ...prev]); setTodoTitle('') }}>Add</Button></div>{sortedTodos.map(todo => <div key={todo.id} className='border border-neutral-800 rounded-lg p-3 flex items-center justify-between gap-2'><label className='flex items-center gap-2'><input type='checkbox' checked={todo.done} onChange={() => setTodos(prev => prev.map(t => t.id === todo.id ? { ...t, done: !t.done } : t))} /><span className={cn(todo.done && 'line-through text-neutral-500')}>{todo.title}</span></label><Button size='sm' variant='destructive' onClick={() => setTodos(prev => prev.filter(t => t.id !== todo.id))}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div>)}</CardContent></Card>
-            </div>
+            <Card>
+              <CardContent className='py-4 space-y-4'>
+                <div className='flex flex-wrap items-center gap-2 text-sm'>
+                  <Badge variant='outline' className='gap-1'>
+                    Due Date {mainDueSort === 'due-asc' ? '↑' : '↓'}
+                  </Badge>
+                  <Badge variant='outline'>Type: ASSIGNMENT</Badge>
+                  <Badge variant='outline'>Due Date: After 2 days ago</Badge>
+                  <Badge variant='secondary'>+ Filter</Badge>
+                </div>
+                <DataTable columns={assignmentColumns} data={mainAssignmentRows} />
+                {!mainAssignmentRows.length && (
+                  <p className='text-sm text-neutral-400'>No assignments match the current filters.</p>
+                )}
+                <div className='flex items-center justify-center gap-2 pt-2'>
+                  <Button variant='outline' disabled className='gap-2'>
+                    <CalendarDays className='h-4 w-4' />
+                    Edit filters
+                  </Button>
+                  <Button onClick={handleCreateAssignmentFromMainList} disabled={saving}>
+                    <Plus className='w-4 h-4 mr-2' />
+                    New page
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           </>
         )}
 
