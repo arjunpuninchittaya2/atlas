@@ -184,7 +184,11 @@ function normalizeAssignmentUrl(value: string) {
 }
 
 function formatStatusLabel(status: Assignment['status']) {
-  return status.replaceAll('_', ' ')
+  return status
+    .toLowerCase()
+    .split('_')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
 }
 
 export default function NewDashboard() {
@@ -368,10 +372,17 @@ export default function NewDashboard() {
   useEffect(() => {
     setAssignmentDrafts(prev => {
       const next: Record<string, AssignmentDraft> = {}
+      let changed = false
       for (const assignment of mainAssignmentRows) {
-        next[assignment.id] = prev[assignment.id] ?? toAssignmentDraft(assignment)
+        if (prev[assignment.id]) {
+          next[assignment.id] = prev[assignment.id]
+        } else {
+          next[assignment.id] = toAssignmentDraft(assignment)
+          changed = true
+        }
       }
-      return next
+      if (Object.keys(prev).length !== Object.keys(next).length) changed = true
+      return changed ? next : prev
     })
   }, [mainAssignmentRows])
 
@@ -540,7 +551,10 @@ export default function NewDashboard() {
           return (
             <Input
               value={draft.title}
-              onChange={event => patchAssignmentDraft(assignment.id, { title: event.target.value })}
+              onChange={event => {
+                setError('')
+                patchAssignmentDraft(assignment.id, { title: event.target.value })
+              }}
               onBlur={() => {
                 const title = draft.title.trim()
                 if (!title) {
@@ -610,11 +624,14 @@ export default function NewDashboard() {
             <Input
               value={draft.link ?? ''}
               placeholder='https://example.com'
-              onChange={event => patchAssignmentDraft(assignment.id, { link: event.target.value || null })}
+              onChange={event => {
+                setError('')
+                patchAssignmentDraft(assignment.id, { link: event.target.value || null })
+              }}
               onBlur={() => {
                 const normalized = normalizeAssignmentUrl(draft.link ?? '')
                 if (!normalized.ok) {
-                  setError('Assignment link must be a valid URL')
+                  setError('Assignment link must be a valid URL (e.g., https://example.com)')
                   patchAssignmentDraft(assignment.id, { link: assignment.link })
                   return
                 }

@@ -21,7 +21,7 @@ export function DataTable<TData>({
   columns: ColumnDef<TData>[]
   data: TData[]
 }) {
-  // eslint-disable-next-line react-hooks/incompatible-library
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Table's hook is intentionally used inside this reusable component.
   const table = useReactTable({
     data,
     columns,
