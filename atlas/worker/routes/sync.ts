@@ -20,6 +20,8 @@ type CourseWorkItem = {
   dueDate?: ClassroomDueDate
   dueTime?: ClassroomDueTime
   alternateLink?: string
+  completed?: boolean
+  submissionState?: string | null
 }
 
 type AnnouncementItem = {
@@ -74,6 +76,21 @@ function mapAssignmentType(workType?: string):
   }
 
   return 'ASSIGNMENT'
+}
+
+function mapCompletionStatus(item: CourseWorkItem, current?: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED') {
+  const state = item.submissionState
+  if (item.completed === true || state === 'TURNED_IN' || state === 'RETURNED') {
+    return 'COMPLETED'
+  }
+  if (state === 'RECLAIMED_BY_STUDENT') {
+    return 'IN_PROGRESS'
+  }
+  if (item.completed === false) {
+    return 'NOT_STARTED'
+  }
+
+  return current ?? 'NOT_STARTED'
 }
 
 function json(body: unknown, status = 200) {
@@ -131,6 +148,7 @@ export async function handleUpdateSync(user: UserRecord, env: Env, payload: Sync
       const dueTime = mapDueTime(item.dueTime)
       const description = item.description?.trim() || ''
       const link = item.alternateLink?.trim() || null
+      const status = mapCompletionStatus(item)
 
       if (existingAssignmentIndex === -1) {
         user.data.assignments.push({
@@ -141,7 +159,7 @@ export async function handleUpdateSync(user: UserRecord, env: Env, payload: Sync
           dueDate,
           dueTime,
           type: mappedType,
-          status: 'NOT_STARTED',
+          status,
           link,
           createdAt: now,
           updatedAt: now,
@@ -156,6 +174,7 @@ export async function handleUpdateSync(user: UserRecord, env: Env, payload: Sync
         existing.dueTime = dueTime
         existing.type = mappedType
         existing.link = link
+        existing.status = mapCompletionStatus(item, existing.status)
         existing.updatedAt = now
         assignmentsUpdated += 1
       }

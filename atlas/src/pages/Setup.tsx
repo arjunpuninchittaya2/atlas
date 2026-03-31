@@ -14,6 +14,26 @@ function buildAppsScriptTemplate(atlasApiKey: string, atlasSyncUrl: string) {
 const ATLAS_SYNC_URL = "${atlasSyncUrl}";
 const ATLAS_SYNC_ENABLED = true;
 
+function getSubmissionState(courseId, courseWorkId) {
+  try {
+    const submissions = Classroom.Courses.CourseWork.StudentSubmissions.list(courseId, courseWorkId, {
+      userId: "me",
+    });
+
+    const first = submissions?.studentSubmissions?.[0];
+    const state = first?.state || null;
+    const completed = state === "TURNED_IN" || state === "RETURNED";
+
+    return { completed, submissionState: state };
+  } catch (e) {
+    console.warn(
+      "StudentSubmissions error for " + courseWorkId + ": " +
+      JSON.stringify(e)
+    );
+    return { completed: false, submissionState: null };
+  }
+}
+
 function sendClassroomDataWebhook(syncMode) {
   if (!ATLAS_SYNC_ENABLED) {
     console.log("Sync disabled.");
@@ -61,7 +81,15 @@ function sendClassroomDataWebhook(syncMode) {
           });
 
           if (cwRes && cwRes.courseWork) {
-            courseData.courseWork = courseData.courseWork.concat(cwRes.courseWork);
+            const mappedCourseWork = cwRes.courseWork.map(cw => {
+              const completion = cw.id ? getSubmissionState(course.id, cw.id) : { completed: false, submissionState: null };
+              return {
+                ...cw,
+                completed: completion.completed,
+                submissionState: completion.submissionState
+              };
+            });
+            courseData.courseWork = courseData.courseWork.concat(mappedCourseWork);
           }
 
           cwToken = cwRes.nextPageToken;
