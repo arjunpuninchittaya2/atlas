@@ -1,8 +1,28 @@
-import { apiKeyKey, kvGetJson, userKey, type ApiKeyRecord, type UserRecord } from './kv'
-import { handleAuthCallback, handleAuthNotion } from './routes/auth'
-import { handleDashboardCourses, handleDashboardGet } from './routes/dashboard'
-import { handleSetupCreateDb, handleSetupInfo, handleSetupVerify } from './routes/setup'
-import { handleUpdate } from './routes/update'
+import { apiKeyKey, kvGetJson, userKey, type ApiKeyRecord, type UserRecord } from './types'
+import {
+  handleRegister,
+  handleLogin,
+  handleGetProfile,
+  handleCompleteSetup,
+  handleVerifyInitialSync,
+} from './routes/new-auth'
+import {
+  handleGetDashboard,
+  handleCreateCourse,
+  handleUpdateCourse,
+  handleDeleteCourse,
+  handleCreateAssignment,
+  handleUpdateAssignment,
+  handleDeleteAssignment,
+} from './routes/new-dashboard'
+import {
+  handleAdminClearNamespace,
+  handleAdminDeleteUser,
+  handleAdminGetUser,
+  handleAdminListUsers,
+  handleAdminUpdateUser,
+} from './routes/admin'
+import { handleUpdateSync } from './routes/sync'
 
 export type ApiContext = {
   request: Request
@@ -15,7 +35,7 @@ function withCors(response: Response) {
   const headers = new Headers(response.headers)
   headers.set('Access-Control-Allow-Origin', '*')
   headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  headers.set('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -52,12 +72,18 @@ async function getAuthedUser(request: Request, env: Env) {
 
 function requiresAuth(pathname: string) {
   return [
-    '/api/setup/create-db',
-    '/api/setup/verify',
-    '/api/setup-info',
+    '/api/admin',
+    '/api/profile',
+    '/api/setup/complete',
+    '/api/setup/verify-initial-sync',
     '/api/dashboard',
-    '/api/dashboard/courses',
-  ].includes(pathname)
+    '/api/courses',
+    '/api/courses/update',
+    '/api/courses/delete',
+    '/api/assignments',
+    '/api/assignments/update',
+    '/api/assignments/delete',
+  ].some(path => pathname.startsWith(path))
 }
 
 export default {
@@ -79,22 +105,78 @@ export default {
 
     if (url.pathname === '/health' && request.method === 'GET') {
       response = json({ ok: true })
-    } else if (url.pathname === '/api/auth/notion' && request.method === 'GET') {
-      response = await handleAuthNotion(context)
-    } else if (url.pathname === '/api/auth/callback') {
-      response = await handleAuthCallback(context)
-    } else if (url.pathname === '/api/setup/create-db') {
-      response = await handleSetupCreateDb(context)
-    } else if (url.pathname === '/api/setup/verify' && request.method === 'GET') {
-      response = await handleSetupVerify(context)
-    } else if (url.pathname === '/api/setup-info' && request.method === 'GET') {
-      response = await handleSetupInfo(context)
+    } else if (url.pathname === '/update' && request.method === 'POST') {
+      try {
+        const body = (await request.json().catch(() => ({}))) as {
+          apiKey?: string
+          syncMode?: string
+          courses?: unknown[]
+        }
+
+        const payloadApiKey = body.apiKey?.trim()
+        if (!payloadApiKey) {
+          response = json({ error: 'apiKey required' }, 400)
+        } else {
+          const mapping = await kvGetJson<ApiKeyRecord>(env.ATLAS_KV, apiKeyKey(payloadApiKey))
+          if (!mapping) {
+            response = json({ error: 'Invalid apiKey' }, 401)
+          } else {
+            const syncUser = await kvGetJson<UserRecord>(env.ATLAS_KV, userKey(mapping.userId))
+            if (!syncUser) {
+              response = json({ error: 'User not found' }, 404)
+            } else {
+              response = await handleUpdateSync(syncUser, env, {
+                syncMode: body.syncMode,
+                courses: Array.isArray(body.courses)
+                  ? (body.courses as Parameters<typeof handleUpdateSync>[2]['courses'])
+                  : [],
+              })
+            }
+          }
+        }
+      } catch (error) {
+        response = json(
+          {
+            error: 'Sync processing failed',
+            details: error instanceof Error ? error.message : 'Unknown error',
+          },
+          500
+        )
+      }
+    } else if (url.pathname === '/api/auth/register' && request.method === 'POST') {
+      response = await handleRegister(context)
+    } else if (url.pathname === '/api/auth/login' && request.method === 'POST') {
+      response = await handleLogin(context)
+    } else if (url.pathname === '/api/profile' && request.method === 'GET') {
+      response = await handleGetProfile(context)
+    } else if (url.pathname === '/api/setup/complete' && request.method === 'POST') {
+      response = await handleCompleteSetup(context)
+    } else if (url.pathname === '/api/setup/verify-initial-sync' && request.method === 'GET') {
+      response = await handleVerifyInitialSync(context)
     } else if (url.pathname === '/api/dashboard' && request.method === 'GET') {
-      response = await handleDashboardGet(context)
-    } else if (url.pathname === '/api/dashboard/courses') {
-      response = await handleDashboardCourses(context)
-    } else if (url.pathname === '/update') {
-      response = await handleUpdate(context)
+      response = await handleGetDashboard(context)
+    } else if (url.pathname === '/api/courses' && request.method === 'POST') {
+      response = await handleCreateCourse(context)
+    } else if (url.pathname === '/api/courses/update' && request.method === 'PATCH') {
+      response = await handleUpdateCourse(context)
+    } else if (url.pathname === '/api/courses/delete' && request.method === 'DELETE') {
+      response = await handleDeleteCourse(context)
+    } else if (url.pathname === '/api/assignments' && request.method === 'POST') {
+      response = await handleCreateAssignment(context)
+    } else if (url.pathname === '/api/assignments/update' && request.method === 'PATCH') {
+      response = await handleUpdateAssignment(context)
+    } else if (url.pathname === '/api/assignments/delete' && request.method === 'DELETE') {
+      response = await handleDeleteAssignment(context)
+    } else if (url.pathname === '/api/admin/users' && request.method === 'GET') {
+      response = await handleAdminListUsers(context)
+    } else if (url.pathname === '/api/admin/user' && request.method === 'GET') {
+      response = await handleAdminGetUser(context)
+    } else if (url.pathname === '/api/admin/user' && request.method === 'PATCH') {
+      response = await handleAdminUpdateUser(context)
+    } else if (url.pathname === '/api/admin/user' && request.method === 'DELETE') {
+      response = await handleAdminDeleteUser(context)
+    } else if (url.pathname === '/api/admin/kv/clear' && request.method === 'POST') {
+      response = await handleAdminClearNamespace(context)
     } else {
       response = json({ error: 'Not found' }, 404)
     }

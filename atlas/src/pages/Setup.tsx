@@ -1,27 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Check } from 'lucide-react'
-import CodeBlock from '../components/CodeBlock'
-import ProgressDots from '../components/ProgressDots'
-import Spinner from '../components/Spinner'
-import { createDatabase, getSetupInfo, verifySetup } from '../lib/api'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Loader2, ShieldCheck } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { completeSetup, getProfile, verifyInitialSync } from '@/lib/new-api'
+import { getApiKey, isAuthenticated } from '@/lib/storage'
+import ProgressDots from '@/components/ProgressDots'
+import CodeBlock from '@/components/CodeBlock'
 import './Setup.css'
 
-type SetupInfoState = {
-  apiKey: string
-  updateUrl: string
-}
+function buildAppsScriptTemplate(atlasApiKey: string, atlasSyncUrl: string) {
+  return `const ATLAS_SYNC_API_KEY = "${atlasApiKey}";
+const ATLAS_SYNC_URL = "${atlasSyncUrl}";
+const ATLAS_SYNC_ENABLED = true;
 
-const VERIFICATION_TIMEOUT_MS = 180_000
-const VERIFICATION_POLL_INTERVAL_MS = 3_000
-
-const SCRIPT_TEMPLATE = `const NOTION_SYNC_API_KEY = "__API_KEY__";
-const NOTION_SYNC_URL = "__UPDATE_URL__";
-const NOTION_SYNC_ENABLED = true;
-
-function sendClassroomDataWebhook() {
-  if (!NOTION_SYNC_ENABLED) {
-    console.log("Sync disabled. Set NOTION_SYNC_ENABLED = true to activate.");
+function sendClassroomDataWebhook(syncMode) {
+  if (!ATLAS_SYNC_ENABLED) {
+    console.log("Sync disabled.");
     return;
   }
 
@@ -30,15 +25,22 @@ function sendClassroomDataWebhook() {
   try {
     let pageToken = null;
     let activeCourses = [];
+
+    // Fetch courses
     do {
       const response = Classroom.Courses.list({
         courseStates: ['ACTIVE'],
         pageToken: pageToken
       });
-      if (response.courses) activeCourses = activeCourses.concat(response.courses);
+
+      if (response.courses) {
+        activeCourses = activeCourses.concat(response.courses);
+      }
+
       pageToken = response.nextPageToken;
     } while (pageToken);
 
+    // Process each course
     activeCourses.forEach(course => {
       let courseData = {
         id: course.id,
@@ -48,34 +50,64 @@ function sendClassroomDataWebhook() {
         announcements: []
       };
 
+      // ---- COURSEWORK ----
       try {
         let cwToken = null;
+
         do {
-          const cwRes = Classroom.Courses.CourseWork.list(course.id, { pageToken: cwToken });
-          if (cwRes.courseWork) courseData.courseWork = courseData.courseWork.concat(cwRes.courseWork);
+          const cwRes = Classroom.Courses.CourseWork.list(course.id, {
+            pageToken: cwToken,
+            courseWorkStates: ["PUBLISHED"]
+          });
+
+          if (cwRes && cwRes.courseWork) {
+            courseData.courseWork = courseData.courseWork.concat(cwRes.courseWork);
+          }
+
           cwToken = cwRes.nextPageToken;
         } while (cwToken);
-      } catch(e) { console.warn("Skipping courseWork for " + course.name + ": " + e.message); }
 
+      } catch (e) {
+        console.warn(
+          "CourseWork error for " + course.name + ": " +
+          JSON.stringify(e)
+        );
+      }
+
+      // ---- ANNOUNCEMENTS ----
       try {
         let annToken = null;
+
         do {
-          const annRes = Classroom.Courses.Announcements.list(course.id, { pageToken: annToken });
-          if (annRes.announcements) courseData.announcements = courseData.announcements.concat(annRes.announcements);
+          const annRes = Classroom.Courses.Announcements.list(course.id, {
+            pageToken: annToken
+          });
+
+          if (annRes && annRes.announcements) {
+            courseData.announcements = courseData.announcements.concat(annRes.announcements);
+          }
+
           annToken = annRes.nextPageToken;
         } while (annToken);
-      } catch(e) { console.warn("Skipping announcements for " + course.name + ": " + e.message); }
+
+      } catch (e) {
+        console.warn(
+          "Announcements error for " + course.name + ": " +
+          JSON.stringify(e)
+        );
+      }
 
       payloadData.courses.push(courseData);
     });
 
-  } catch(e) {
-    console.error("Critical error: " + e.message);
+  } catch (e) {
+    console.error("Critical error: " + JSON.stringify(e));
     return;
   }
 
   const payload = {
-    apiKey: NOTION_SYNC_API_KEY,
+    apiKey: ATLAS_SYNC_API_KEY,
+    syncMode: syncMode || "queued",
     courses: payloadData.courses
   };
 
@@ -87,206 +119,238 @@ function sendClassroomDataWebhook() {
   };
 
   try {
-    const response = UrlFetchApp.fetch(NOTION_SYNC_URL, options);
-    console.log("Sync complete: " + response.getContentText());
-  } catch(e) {
-    console.error("Error sending data: " + e.message);
+    const response = UrlFetchApp.fetch(ATLAS_SYNC_URL, options);
+    const status = response.getResponseCode();
+    const raw = response.getContentText();
+
+    let body = {};
+    try {
+      body = JSON.parse(raw || "{}");
+    } catch (parseError) {
+      console.error("Non-JSON response (" + status + "): " + raw);
+      return;
+    }
+
+    if (status >= 400) {
+      console.error("ATLAS sync error (" + status + "): " + JSON.stringify(body));
+      return;
+    }
+
+    console.log("Sync complete.");
+    console.log("Courses created: " + (body.coursesCreated || 0));
+    console.log("Assignments synced: " + (body.assignmentsSynced || 0));
+
+  } catch (e) {
+    console.error("Error sending data: " + JSON.stringify(e));
   }
+}
+
+function runInitialSync() {
+  sendClassroomDataWebhook("client");
+}
+
+function createHourlySyncTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === "runInitialSync")
+    .forEach(t => ScriptApp.deleteTrigger(t));
+
+  ScriptApp.newTrigger("runInitialSync")
+    .timeBased()
+    .everyHours(1)
+    .create();
+
+  console.log("Hourly trigger created.");
 }`
+}
 
 export default function Setup() {
   const navigate = useNavigate()
-  const [activeStep, setActiveStep] = useState(1)
-  const [setupInfo, setSetupInfo] = useState<SetupInfoState | null>(null)
-  const [loadingInfo, setLoadingInfo] = useState(true)
-  const [dbCreating, setDbCreating] = useState(false)
-  const [dbResult, setDbResult] = useState<{ databaseId: string; databaseName: string; databaseUrl: string } | null>(null)
-  const [dbError, setDbError] = useState<string | null>(null)
-  const [showManualDb, setShowManualDb] = useState(false)
-  const [manualDbId, setManualDbId] = useState('')
-  const [verified, setVerified] = useState(false)
-  const [verifyTimeout, setVerifyTimeout] = useState(false)
+  const [searchParams] = useSearchParams()
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [checklistConfirmed, setChecklistConfirmed] = useState(false)
+  const [healthVerified, setHealthVerified] = useState(false)
+  const [initialSyncVerified, setInitialSyncVerified] = useState(false)
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null)
+  const [syncDetails, setSyncDetails] = useState<string | null>(null)
+  const [syncCounts, setSyncCounts] = useState<{ courses: number; assignments: number }>({
+    courses: 0,
+    assignments: 0,
+  })
 
-  useEffect(() => {
-    getSetupInfo()
-      .then((response) => setSetupInfo(response))
-      .catch(() => setSetupInfo(null))
-      .finally(() => setLoadingInfo(false))
+  const redirectTarget = searchParams.get('redirect') || '/dashboard'
+
+  const setupStep = useMemo(() => {
+    if (!healthVerified) return 1
+    if (!initialSyncVerified) return 2
+    return 3
+  }, [healthVerified, initialSyncVerified])
+
+  const appsScriptTemplate = useMemo(() => {
+    const atlasApiKey = getApiKey() || 'PASTE_YOUR_ATLAS_API_KEY_HERE'
+    const atlasSyncUrl = `${window.location.origin}/update`
+    return buildAppsScriptTemplate(atlasApiKey, atlasSyncUrl)
   }, [])
 
   useEffect(() => {
-    if (activeStep !== 3 || verified) {
+    if (!isAuthenticated()) {
+      navigate(`/login?redirect=${encodeURIComponent('/setup')}`)
       return
     }
 
-    const startedAt = Date.now()
-    const interval = window.setInterval(() => {
-      verifySetup()
-        .then((response) => {
-          if (response.verified) {
-            setVerified(true)
-            window.clearInterval(interval)
-          }
+    ;(async () => {
+      try {
+        const profile = await getProfile()
+        if (profile.user.setupCompleted) {
+          navigate(redirectTarget)
+          return
+        }
 
-          if (Date.now() - startedAt > VERIFICATION_TIMEOUT_MS) {
-            setVerifyTimeout(true)
-            window.clearInterval(interval)
-          }
-        })
-        .catch(() => {
-          if (Date.now() - startedAt > VERIFICATION_TIMEOUT_MS) {
-            setVerifyTimeout(true)
-            window.clearInterval(interval)
-          }
-        })
-    }, VERIFICATION_POLL_INTERVAL_MS)
+        const healthResponse = await fetch('/health')
+        setHealthVerified(healthResponse.ok)
 
-    return () => window.clearInterval(interval)
-  }, [activeStep, verified])
+        const sync = await verifyInitialSync()
+        setInitialSyncVerified(sync.verified)
+        setLastSyncAt(sync.lastSyncAt)
+        setSyncDetails(sync.details)
+        setSyncCounts({ courses: sync.courses, assignments: sync.assignments })
+      } catch {
+        navigate(`/login?redirect=${encodeURIComponent('/setup')}`)
+        return
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [navigate, redirectTarget])
 
-  const script = useMemo(() => {
-    if (!setupInfo) return ''
+  const handleFinishSetup = async () => {
+    if (!initialSyncVerified) {
+      setError('Run your script initial sync first, then click Verify Initial Sync')
+      return
+    }
+    if (!checklistConfirmed) {
+      setError('Please confirm all setup checklist items')
+      return
+    }
 
-    return SCRIPT_TEMPLATE
-      .replace('__API_KEY__', setupInfo.apiKey)
-      .replace('__UPDATE_URL__', setupInfo.updateUrl)
-  }, [setupInfo])
-
-  const handleCreateDb = async (databaseId?: string) => {
-    setDbError(null)
-    setDbCreating(true)
-
+    setSaving(true)
+    setError('')
     try {
-      const result = await createDatabase(databaseId)
-      setDbResult(result)
-      window.setTimeout(() => setActiveStep(2), 1500)
-    } catch (error) {
-      setDbError(error instanceof Error ? error.message : 'Failed to create database.')
+      await completeSetup({ checklistConfirmed: true })
+      navigate(redirectTarget)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to complete setup')
     } finally {
-      setDbCreating(false)
+      setSaving(false)
     }
   }
 
-  if (loadingInfo) {
-    return <Spinner label='Loading setup…' />
+  const handleVerifyInitialSync = async () => {
+    setError('')
+    try {
+      const sync = await verifyInitialSync()
+      setInitialSyncVerified(sync.verified)
+      setLastSyncAt(sync.lastSyncAt)
+      setSyncDetails(sync.details)
+      setSyncCounts({ courses: sync.courses, assignments: sync.assignments })
+
+      if (!sync.verified) {
+        setError('No initial sync found yet. Run runInitialSync() in Apps Script, then verify again.')
+        return
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not verify initial sync')
+      setInitialSyncVerified(false)
+    }
   }
 
-  if (!setupInfo) {
+  if (loading) {
     return (
-      <div className='centered-message'>
-        <p>Unable to load setup details.</p>
-        <Link to='/'>Back to home</Link>
+      <div className='min-h-screen flex items-center justify-center bg-background'>
+        <Loader2 className='w-5 h-5 animate-spin text-neutral-400' />
       </div>
     )
   }
 
   return (
-    <main className='setup-page'>
-      <ProgressDots activeStep={activeStep} />
-
-      <section className='setup-card'>
-        {activeStep === 1 && (
-          <>
-            <h1>Create your assignments database</h1>
-            <p>ATLAS creates a Notion database in your workspace and configures it with the fields needed for syncing.</p>
-            <button
-              type='button'
-              className='btn-primary'
-              onClick={() => handleCreateDb()}
-              disabled={dbCreating}
-            >
-              {dbCreating ? 'Creating…' : 'Create Database'}
-            </button>
-
-            <button
-              type='button'
-              className='btn-link'
-              onClick={() => setShowManualDb((value) => !value)}
-            >
-              Already have a database?
-            </button>
-
-            {showManualDb && (
-              <div className='manual-db'>
-                <input
-                  value={manualDbId}
-                  onChange={(event) => setManualDbId(event.target.value)}
-                  placeholder='Paste database ID'
-                />
-                <button
-                  type='button'
-                  className='btn-primary'
-                  disabled={!manualDbId || dbCreating}
-                  onClick={() => handleCreateDb(manualDbId)}
-                >
-                  Save Database
-                </button>
-              </div>
-            )}
-
-            {dbResult && (
-              <p className='success-line'>
-                <Check size={16} />
-                <a href={dbResult.databaseUrl} target='_blank' rel='noreferrer'>
-                  {dbResult.databaseName}
-                </a>
-              </p>
-            )}
-
-            {dbError && <p className='error-line'>{dbError}</p>}
-          </>
-        )}
-
-        {activeStep === 2 && (
-          <>
-            <h1>Install the sync script</h1>
-            <p>This script runs in your Google account and sends your Classroom data to ATLAS.</p>
-            <ol>
-              <li>Go to script.google.com and create a new project</li>
-              <li>Delete all existing code and paste the script below</li>
-              <li>Click Run → approve Google permissions</li>
-              <li>Click Triggers → Add Trigger → sendClassroomDataWebhook → Time-driven → Hour timer → Every hour</li>
-            </ol>
-
-            <CodeBlock code={script} />
-
-            <button type='button' className='btn-primary' onClick={() => setActiveStep(3)}>
-              I&apos;ve run the script →
-            </button>
-          </>
-        )}
-
-        {activeStep === 3 && (
-          <>
-            <h1>{verified ? 'Connected.' : 'Waiting for first sync…'}</h1>
-            <p>
-              {verified
-                ? 'Your first assignments have been synced to Notion.'
-                : 'Run the script once in Apps Script to verify everything is working.'}
+    <div className='setup-page bg-background'>
+      <Card className='setup-card w-full max-w-3xl'>
+        <CardHeader>
+          <CardTitle className='text-3xl font-light flex items-center gap-2'>
+            <ShieldCheck className='w-7 h-7 text-emerald-400' />
+            Welcome to ATLAS
+          </CardTitle>
+          <CardDescription>
+            Complete the full first-time setup including Apps Script integration.
+          </CardDescription>
+          <ProgressDots activeStep={setupStep} totalSteps={3} />
+        </CardHeader>
+        <CardContent className='space-y-4'>
+          <div className='space-y-2'>
+            <h3 className='text-lg font-medium'>Step 1: Confirm backend health</h3>
+            <p className='verify-state text-sm text-muted-foreground'>
+              <span className={`verify-dot ${healthVerified ? 'done' : 'pulse'}`} /> ATLAS worker is
+              {healthVerified ? ' reachable.' : ' being checked...'}
             </p>
+          </div>
 
-            <div className='verify-state'>
-              <span className={`verify-dot ${verified ? 'done' : 'pulse'}`} />
+          <div className='space-y-2'>
+            <h3 className='text-lg font-medium'>Step 2: Deploy your Google Apps Script</h3>
+            <p className='text-sm text-muted-foreground'>
+              Copy this script into Google Apps Script, run <strong>runInitialSync()</strong> once,
+              then set an hourly trigger (or run <strong>createHourlySyncTrigger()</strong>). No web app deployment required.
+            </p>
+            <CodeBlock code={appsScriptTemplate} />
+            <div className='manual-db'>
+              <Button type='button' variant='outline' onClick={handleVerifyInitialSync}>
+                Verify Initial Sync
+              </Button>
             </div>
-
-            {verifyTimeout && !verified && (
-              <p className='timeout-line'>
-                Taking longer than expected. Check the Apps Script execution log for errors.
-                {' '}
-                <a href='https://script.google.com/' target='_blank' rel='noreferrer'>
-                  Open script.google.com
-                </a>
+            <p className='verify-state text-sm text-muted-foreground'>
+              <span className={`verify-dot ${initialSyncVerified ? 'done' : 'pulse'}`} />
+              {initialSyncVerified
+                ? ` Initial sync verified (${syncCounts.courses} courses, ${syncCounts.assignments} assignments).`
+                : ' Initial sync not verified yet.'}
+            </p>
+            {lastSyncAt && (
+              <p className='text-xs text-muted-foreground'>
+                Last sync: {new Date(lastSyncAt).toLocaleString()} {syncDetails ? `(${syncDetails})` : ''}
               </p>
             )}
+          </div>
 
-            {verified && (
-              <button type='button' className='btn-primary' onClick={() => navigate('/dashboard')}>
-                Go to dashboard →
-              </button>
-            )}
-          </>
-        )}
-      </section>
-    </main>
+          <div className='space-y-2'>
+            <h3 className='text-lg font-medium'>Step 3: Final checklist</h3>
+            <label className='flex items-start gap-2 text-sm text-muted-foreground'>
+              <input
+                type='checkbox'
+                checked={checklistConfirmed}
+                onChange={e => setChecklistConfirmed(e.target.checked)}
+              />
+              I created and ran the script once, and configured hourly sync trigger.
+            </label>
+            <label className='flex items-start gap-2 text-sm text-muted-foreground'>
+              <input type='checkbox' checked={healthVerified} readOnly />
+              ATLAS worker health check passed.
+            </label>
+            <label className='flex items-start gap-2 text-sm text-muted-foreground'>
+              <input type='checkbox' checked={initialSyncVerified} readOnly />
+              Initial sync from Apps Script verified by ATLAS.
+            </label>
+          </div>
+
+          {error && <p className='text-sm text-red-400'>{error}</p>}
+
+          <Button
+            onClick={handleFinishSetup}
+            disabled={saving || !initialSyncVerified || !checklistConfirmed}
+            className='w-full'
+          >
+            {saving ? 'Finishing setup...' : 'Finish Setup'}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
   )
 }
