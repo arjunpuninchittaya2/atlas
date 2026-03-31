@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import {
   BookOpen,
   Calendar,
+  CalendarDays,
   ClipboardList,
+  ChevronDown,
   Edit3,
   Goal,
   Home,
@@ -20,6 +22,19 @@ import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { DataTable } from '@/components/ui/data-table'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Calendar as DateCalendar } from '@/components/ui/calendar'
+import { type ColumnDef } from '@tanstack/react-table'
+import { format } from 'date-fns'
 import {
   createAssignment,
   createCourse,
@@ -75,6 +90,14 @@ type NavItem = {
   id: ViewId
   icon: LucideIcon
   label: string
+}
+
+type AssignmentDraft = {
+  courseId: string
+  title: string
+  dueDate: string | null
+  link: string | null
+  status: Assignment['status']
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -133,6 +156,37 @@ function isWithinTwoWeeks(assignment: Assignment) {
   return reference >= cutoff
 }
 
+function parseDateInput(value: string | null) {
+  if (!value) return undefined
+  const parsed = new Date(`${value}T12:00:00Z`)
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed
+}
+
+function toAssignmentDraft(assignment: Assignment): AssignmentDraft {
+  return {
+    courseId: assignment.courseId,
+    title: assignment.title,
+    dueDate: assignment.dueDate,
+    link: assignment.link,
+    status: assignment.status,
+  }
+}
+
+function normalizeAssignmentUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return { ok: true as const, value: null as string | null }
+  try {
+    const normalized = new URL(trimmed).toString()
+    return { ok: true as const, value: normalized }
+  } catch {
+    return { ok: false as const }
+  }
+}
+
+function formatStatusLabel(status: Assignment['status']) {
+  return status.replaceAll('_', ' ')
+}
+
 export default function NewDashboard() {
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -165,6 +219,7 @@ export default function NewDashboard() {
     return new Date(now.getFullYear(), now.getMonth(), 1)
   })
   const [selectedDateKey, setSelectedDateKey] = useState(formatDateKey(new Date()))
+  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, AssignmentDraft>>({})
 
   const navigate = useNavigate()
 
@@ -310,6 +365,16 @@ export default function NewDashboard() {
     return rows
   }, [data, mainDueSort])
 
+  useEffect(() => {
+    setAssignmentDrafts(prev => {
+      const next: Record<string, AssignmentDraft> = {}
+      for (const assignment of mainAssignmentRows) {
+        next[assignment.id] = prev[assignment.id] ?? toAssignmentDraft(assignment)
+      }
+      return next
+    })
+  }, [mainAssignmentRows])
+
   const plannerBuckets = useMemo(() => {
     const result: Record<Assignment['status'], Assignment[]> = {
       NOT_STARTED: [],
@@ -396,6 +461,202 @@ export default function NewDashboard() {
       setSaving(false)
     }
   }
+
+  const getStatusBadgeVariant = (status: Assignment['status']) => {
+    if (status === 'COMPLETED') return 'secondary'
+    if (status === 'IN_PROGRESS') return 'default'
+    return 'outline'
+  }
+
+  const patchAssignmentDraft = (assignmentId: string, patch: Partial<AssignmentDraft>) => {
+    setAssignmentDrafts(prev => {
+      const source = mainAssignmentRows.find(item => item.id === assignmentId)
+      if (!source && !prev[assignmentId]) return prev
+      const base = prev[assignmentId] ?? toAssignmentDraft(source!)
+      return { ...prev, [assignmentId]: { ...base, ...patch } }
+    })
+  }
+
+  const persistAssignmentPatch = async (assignmentId: string, patch: Partial<AssignmentDraft>) => {
+    if (!data) return
+    setSaving(true)
+    setError('')
+    try {
+      const payload: Partial<Assignment> = {}
+      if (patch.courseId !== undefined) payload.courseId = patch.courseId
+      if (patch.title !== undefined) payload.title = patch.title
+      if (patch.dueDate !== undefined) payload.dueDate = patch.dueDate
+      if (patch.link !== undefined) payload.link = patch.link
+      if (patch.status !== undefined) payload.status = patch.status
+
+      const result = await updateAssignment(assignmentId, payload)
+      setData({
+        ...data,
+        assignments: data.assignments.map(item => (item.id === assignmentId ? result.assignment : item)),
+      })
+      patchAssignmentDraft(assignmentId, toAssignmentDraft(result.assignment))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update assignment')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const assignmentColumns: ColumnDef<Assignment>[] = [
+      {
+        accessorKey: 'courseId',
+        header: 'Course',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <Select
+              value={draft.courseId}
+              onValueChange={value => {
+                patchAssignmentDraft(assignment.id, { courseId: value })
+                void persistAssignmentPatch(assignment.id, { courseId: value })
+              }}
+            >
+              <SelectTrigger className='h-9 min-w-[160px]'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {data?.courses.map(course => (
+                  <SelectItem key={course.id} value={course.id}>
+                    {course.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )
+        },
+      },
+      {
+        accessorKey: 'title',
+        header: 'Title',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <Input
+              value={draft.title}
+              onChange={event => patchAssignmentDraft(assignment.id, { title: event.target.value })}
+              onBlur={() => {
+                const title = draft.title.trim()
+                if (!title) {
+                  setError('Assignment title cannot be empty')
+                  patchAssignmentDraft(assignment.id, { title: assignment.title })
+                  return
+                }
+                setError('')
+                void persistAssignmentPatch(assignment.id, { title })
+              }}
+              onKeyDown={event => {
+                if (event.key === 'Enter') {
+                  event.currentTarget.blur()
+                }
+              }}
+              className='h-9 min-w-[220px]'
+            />
+          )
+        },
+      },
+      {
+        accessorKey: 'dueDate',
+        header: () => (
+          <Button
+            variant='ghost'
+            className='h-8 px-2'
+            onClick={() => setMainDueSort(prev => (prev === 'due-asc' ? 'due-desc' : 'due-asc'))}
+          >
+            Due Date
+            <ChevronDown className={cn('ml-1 h-4 w-4 transition-transform', mainDueSort === 'due-desc' && 'rotate-180')} />
+          </Button>
+        ),
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          const selectedDate = parseDateInput(draft.dueDate)
+          return (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant='outline' className='h-9 w-[190px] justify-between text-left font-normal'>
+                  {selectedDate ? format(selectedDate, 'PPP') : 'Pick a date'}
+                  <Calendar className='h-4 w-4 opacity-60' />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className='w-auto p-0' align='start'>
+                <DateCalendar
+                  mode='single'
+                  selected={selectedDate}
+                  onSelect={date => {
+                    const dueDate = date ? formatDateKey(date) : null
+                    patchAssignmentDraft(assignment.id, { dueDate })
+                    void persistAssignmentPatch(assignment.id, { dueDate })
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+          )
+        },
+      },
+      {
+        accessorKey: 'link',
+        header: 'Link',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <Input
+              value={draft.link ?? ''}
+              placeholder='https://example.com'
+              onChange={event => patchAssignmentDraft(assignment.id, { link: event.target.value || null })}
+              onBlur={() => {
+                const normalized = normalizeAssignmentUrl(draft.link ?? '')
+                if (!normalized.ok) {
+                  setError('Assignment link must be a valid URL')
+                  patchAssignmentDraft(assignment.id, { link: assignment.link })
+                  return
+                }
+                setError('')
+                void persistAssignmentPatch(assignment.id, { link: normalized.value })
+              }}
+              className='h-9 min-w-[260px]'
+            />
+          )
+        },
+      },
+      {
+        accessorKey: 'status',
+        header: 'Status',
+        cell: ({ row }) => {
+          const assignment = row.original
+          const draft = assignmentDrafts[assignment.id] ?? toAssignmentDraft(assignment)
+          return (
+            <div className='flex items-center gap-2'>
+              <Badge variant={getStatusBadgeVariant(draft.status)}>{formatStatusLabel(draft.status)}</Badge>
+              <Select
+                value={draft.status}
+                onValueChange={value => {
+                  const status = value as Assignment['status']
+                  patchAssignmentDraft(assignment.id, { status })
+                  void persistAssignmentPatch(assignment.id, { status })
+                }}
+              >
+                <SelectTrigger className='h-9 w-[150px]'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='NOT_STARTED'>{formatStatusLabel('NOT_STARTED')}</SelectItem>
+                  <SelectItem value='IN_PROGRESS'>{formatStatusLabel('IN_PROGRESS')}</SelectItem>
+                  <SelectItem value='COMPLETED'>{formatStatusLabel('COMPLETED')}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          )
+        },
+      },
+    ]
 
   const monthDays = useMemo(() => {
     const first = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1)
@@ -506,52 +767,20 @@ export default function NewDashboard() {
             <Card>
               <CardContent className='py-4 space-y-4'>
                 <div className='flex flex-wrap items-center gap-2 text-sm'>
-                  <button
-                    type='button'
-                    onClick={() => setMainDueSort(prev => (prev === 'due-asc' ? 'due-desc' : 'due-asc'))}
-                    className='rounded-full border border-border bg-muted px-3 py-1 text-foreground'
-                  >
+                  <Badge variant='outline' className='gap-1'>
                     Due Date {mainDueSort === 'due-asc' ? '↑' : '↓'}
-                  </button>
-                  <span className='rounded-full border border-border bg-muted px-3 py-1 text-foreground'>Type: ASSIGNMENT</span>
-                  <span className='rounded-full border border-border bg-muted px-3 py-1 text-foreground'>Due Date: After 2 days ago</span>
-                  <span className='text-neutral-400'>+ Filter</span>
+                  </Badge>
+                  <Badge variant='outline'>Type: ASSIGNMENT</Badge>
+                  <Badge variant='outline'>Due Date: After 2 days ago</Badge>
+                  <Badge variant='secondary'>+ Filter</Badge>
                 </div>
-                <div className='overflow-x-auto'>
-                  <table className='w-full text-sm'>
-                    <thead>
-                      <tr className='text-neutral-400'>
-                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Course</th>
-                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Title</th>
-                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Due Date</th>
-                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Link</th>
-                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {mainAssignmentRows.map(assignment => (
-                        <tr key={assignment.id}>
-                          <td className='border-b border-neutral-900 px-3 py-2'>{getCourseById(assignment.courseId)?.name ?? 'Unknown course'}</td>
-                          <td className='border-b border-neutral-900 px-3 py-2'>{assignment.title}</td>
-                          <td className='border-b border-neutral-900 px-3 py-2'>{assignment.dueDate}</td>
-                          <td className='border-b border-neutral-900 px-3 py-2'>
-                            {assignment.link ? (
-                              <a href={assignment.link} className='text-neutral-300 underline' target='_blank' rel='noreferrer'>Open</a>
-                            ) : (
-                              <span className='text-neutral-500'>—</span>
-                            )}
-                          </td>
-                          <td className='border-b border-neutral-900 px-3 py-2'>{assignment.status}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <DataTable columns={assignmentColumns} data={mainAssignmentRows} />
                 {!mainAssignmentRows.length && (
                   <p className='text-sm text-neutral-400'>No assignments match the current filters.</p>
                 )}
                 <div className='flex items-center justify-center gap-2 pt-2'>
-                  <Button variant='outline' disabled>
+                  <Button variant='outline' disabled className='gap-2'>
+                    <CalendarDays className='h-4 w-4' />
                     Edit filters
                   </Button>
                   <Button onClick={handleCreateAssignmentFromMainList} disabled={saving}>

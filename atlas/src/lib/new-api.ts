@@ -211,7 +211,7 @@ export function createAssignment(data: {
 
 export function updateAssignment(
   id: string,
-  updates: Partial<Omit<Assignment, 'id' | 'courseId' | 'type' | 'createdAt' | 'updatedAt'>>
+  updates: Partial<Omit<Assignment, 'id' | 'type' | 'createdAt' | 'updatedAt'>>
 ) {
   return request<{ assignment: Assignment }>('/api/assignments/update', {
     method: 'PATCH',
