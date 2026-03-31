@@ -1,18 +1,177 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Home, Calendar, BookOpen, User, Plus, MoreHorizontal } from 'lucide-react'
+import {
+  BookOpen,
+  Calendar,
+  ClipboardList,
+  Edit3,
+  Goal,
+  Home,
+  ListChecks,
+  LogOut,
+  MoreHorizontal,
+  Plus,
+  Search,
+  Timer,
+  Trash2,
+  User,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { getDashboard, updateAssignment, logout, type Assignment, type DashboardResponse } from '@/lib/new-api'
+import {
+  createAssignment,
+  createCourse,
+  deleteAssignment,
+  deleteCourse,
+  getDashboard,
+  logout,
+  updateAssignment,
+  updateCourse,
+  type Assignment,
+  type DashboardResponse,
+} from '@/lib/new-api'
 import { isAuthenticated } from '@/lib/storage'
 import { cn } from '@/lib/utils'
+
+type ViewId =
+  | 'overview'
+  | 'planner'
+  | 'courses'
+  | 'assignments'
+  | 'calendar'
+  | 'focus'
+  | 'notes'
+  | 'goals'
+  | 'insights'
+  | 'settings'
+
+type Note = {
+  id: string
+  title: string
+  body: string
+  updatedAt: string
+}
+
+type TodoItem = {
+  id: string
+  title: string
+  done: boolean
+  createdAt: string
+}
+
+type StudyGoal = {
+  id: string
+  title: string
+  progress: number
+}
+
+type FocusSession = {
+  startedAt: string
+  minutes: number
+}
+
+type NavItem = {
+  id: ViewId
+  icon: LucideIcon
+  label: string
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'overview', icon: Home, label: 'Overview' },
+  { id: 'planner', icon: ClipboardList, label: 'Planner' },
+  { id: 'courses', icon: BookOpen, label: 'Courses' },
+  { id: 'assignments', icon: ListChecks, label: 'Assignments' },
+  { id: 'calendar', icon: Calendar, label: 'Calendar' },
+  { id: 'focus', icon: Timer, label: 'Focus Timer' },
+  { id: 'notes', icon: Edit3, label: 'Notes' },
+  { id: 'goals', icon: Goal, label: 'Goals' },
+  { id: 'insights', icon: MoreHorizontal, label: 'Insights' },
+  { id: 'settings', icon: User, label: 'Settings' },
+]
+
+const NOTES_KEY = 'atlas_notes'
+const GOALS_KEY = 'atlas_goals'
+const FOCUS_KEY = 'atlas_focus_sessions'
+const TODOS_KEY = 'atlas_todos'
+
+function safeLocalGet<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return fallback
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
+}
+
+function safeLocalSet(key: string, value: unknown) {
+  localStorage.setItem(key, JSON.stringify(value))
+}
+
+function toStartOfDay(date: Date) {
+  const next = new Date(date)
+  next.setHours(0, 0, 0, 0)
+  return next
+}
+
+function formatDateKey(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
+    date.getDate()
+  ).padStart(2, '0')}`
+}
+
+function isWithinTwoWeeks(assignment: Assignment) {
+  const now = toStartOfDay(new Date())
+  const cutoff = new Date(now)
+  cutoff.setDate(cutoff.getDate() - 14)
+
+  const reference = assignment.dueDate
+    ? toStartOfDay(new Date(assignment.dueDate))
+    : toStartOfDay(new Date(assignment.createdAt))
+
+  return reference >= cutoff
+}
 
 export default function NewDashboard() {
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [activeView, setActiveView] = useState<'dashboard' | 'courses' | 'calendar'>('dashboard')
+  const [activeView, setActiveView] = useState<ViewId>('overview')
   const [searchQuery, setSearchQuery] = useState('')
+  const [courseName, setCourseName] = useState('')
+  const [courseColor, setCourseColor] = useState('')
+  const [assignmentTitle, setAssignmentTitle] = useState('')
+  const [assignmentCourseId, setAssignmentCourseId] = useState('')
+  const [assignmentDueDate, setAssignmentDueDate] = useState('')
+  const [assignmentType, setAssignmentType] = useState<Assignment['type']>('ASSIGNMENT')
+  const [noteTitle, setNoteTitle] = useState('')
+  const [noteBody, setNoteBody] = useState('')
+  const [todoTitle, setTodoTitle] = useState('')
+  const [goalTitle, setGoalTitle] = useState('')
+  const [notes, setNotes] = useState<Note[]>([])
+  const [todos, setTodos] = useState<TodoItem[]>([])
+  const [goals, setGoals] = useState<StudyGoal[]>([])
+  const [focusSessions, setFocusSessions] = useState<FocusSession[]>([])
+  const [secondsLeft, setSecondsLeft] = useState(25 * 60)
+  const [timerRunning, setTimerRunning] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const [courseSort, setCourseSort] = useState<'name-asc' | 'name-desc' | 'created-desc'>('name-asc')
+  const [schoolSort, setSchoolSort] = useState<'due-asc' | 'due-desc' | 'created-desc' | 'title-asc'>('due-asc')
+  const [todoSort, setTodoSort] = useState<'created-desc' | 'title-asc' | 'status'>('created-desc')
+  const [noteSort, setNoteSort] = useState<'updated-desc' | 'title-asc'>('updated-desc')
+  const [goalSort, setGoalSort] = useState<'progress-desc' | 'title-asc'>('progress-desc')
+  const [focusSort, setFocusSort] = useState<'newest' | 'oldest' | 'minutes-desc'>('newest')
+  const [calendarSort, setCalendarSort] = useState<'title-asc' | 'status'>('title-asc')
+
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const now = new Date()
+    return new Date(now.getFullYear(), now.getMonth(), 1)
+  })
+  const [selectedDateKey, setSelectedDateKey] = useState(formatDateKey(new Date()))
+
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -28,7 +187,155 @@ export default function NewDashboard() {
         navigate('/login')
       })
       .finally(() => setLoading(false))
+
+    setNotes(safeLocalGet<Note[]>(NOTES_KEY, []))
+    setTodos(safeLocalGet<TodoItem[]>(TODOS_KEY, []))
+    setGoals(safeLocalGet<StudyGoal[]>(GOALS_KEY, []))
+    setFocusSessions(safeLocalGet<FocusSession[]>(FOCUS_KEY, []))
   }, [navigate])
+
+  useEffect(() => safeLocalSet(NOTES_KEY, notes), [notes])
+  useEffect(() => safeLocalSet(TODOS_KEY, todos), [todos])
+  useEffect(() => safeLocalSet(GOALS_KEY, goals), [goals])
+  useEffect(() => safeLocalSet(FOCUS_KEY, focusSessions), [focusSessions])
+
+  useEffect(() => {
+    if (!timerRunning || secondsLeft <= 0) {
+      if (secondsLeft <= 0 && timerRunning) {
+        setFocusSessions(prev => [{ startedAt: new Date().toISOString(), minutes: 25 }, ...prev].slice(0, 200))
+        setTimerRunning(false)
+        setSecondsLeft(25 * 60)
+      }
+      return
+    }
+
+    const timer = window.setInterval(() => setSecondsLeft(prev => prev - 1), 1000)
+    return () => window.clearInterval(timer)
+  }, [timerRunning, secondsLeft])
+
+  const visibleSchoolAssignments = useMemo(() => {
+    const all = (data?.assignments ?? []).filter(isWithinTwoWeeks)
+
+    const searched = all.filter(a => {
+      if (!searchQuery) return true
+      const q = searchQuery.toLowerCase()
+      const course = data?.courses.find(c => c.id === a.courseId)
+      return (
+        a.title.toLowerCase().includes(q) ||
+        a.description.toLowerCase().includes(q) ||
+        course?.name.toLowerCase().includes(q)
+      )
+    })
+
+    const sorted = [...searched]
+    sorted.sort((a, b) => {
+      if (schoolSort === 'title-asc') return a.title.localeCompare(b.title)
+      if (schoolSort === 'created-desc') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+
+      const da = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER
+      const db = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER
+      if (schoolSort === 'due-desc') return db - da
+      return da - db
+    })
+    return sorted
+  }, [data, searchQuery, schoolSort])
+
+  const sortedCourses = useMemo(() => {
+    const arr = [...(data?.courses ?? [])]
+    arr.sort((a, b) => {
+      if (courseSort === 'name-desc') return b.name.localeCompare(a.name)
+      if (courseSort === 'created-desc') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      return a.name.localeCompare(b.name)
+    })
+    return arr
+  }, [data, courseSort])
+
+  const sortedTodos = useMemo(() => {
+    const arr = [...todos]
+    arr.sort((a, b) => {
+      if (todoSort === 'title-asc') return a.title.localeCompare(b.title)
+      if (todoSort === 'status') return Number(a.done) - Number(b.done)
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    })
+    return arr
+  }, [todos, todoSort])
+
+  const sortedNotes = useMemo(() => {
+    const arr = [...notes]
+    arr.sort((a, b) => {
+      if (noteSort === 'title-asc') return a.title.localeCompare(b.title)
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    })
+    return arr
+  }, [notes, noteSort])
+
+  const sortedGoals = useMemo(() => {
+    const arr = [...goals]
+    arr.sort((a, b) => {
+      if (goalSort === 'title-asc') return a.title.localeCompare(b.title)
+      return b.progress - a.progress
+    })
+    return arr
+  }, [goals, goalSort])
+
+  const sortedFocusSessions = useMemo(() => {
+    const arr = [...focusSessions]
+    arr.sort((a, b) => {
+      if (focusSort === 'oldest') return new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+      if (focusSort === 'minutes-desc') return b.minutes - a.minutes
+      return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+    })
+    return arr
+  }, [focusSessions, focusSort])
+
+  const assignmentsByDate = useMemo(() => {
+    const map = new Map<string, Assignment[]>()
+    for (const assignment of visibleSchoolAssignments) {
+      if (!assignment.dueDate) continue
+      const bucket = map.get(assignment.dueDate) ?? []
+      bucket.push(assignment)
+      map.set(assignment.dueDate, bucket)
+    }
+    return map
+  }, [visibleSchoolAssignments])
+
+  const selectedDateAssignments = useMemo(() => {
+    const arr = [...(assignmentsByDate.get(selectedDateKey) ?? [])]
+    arr.sort((a, b) => {
+      if (calendarSort === 'status') return a.status.localeCompare(b.status)
+      return a.title.localeCompare(b.title)
+    })
+    return arr
+  }, [assignmentsByDate, selectedDateKey, calendarSort])
+
+  const plannerBuckets = useMemo(() => {
+    const result: Record<Assignment['status'], Assignment[]> = {
+      NOT_STARTED: [],
+      IN_PROGRESS: [],
+      COMPLETED: [],
+    }
+    for (const assignment of visibleSchoolAssignments) {
+      result[assignment.status].push(assignment)
+    }
+    return result
+  }, [visibleSchoolAssignments])
+
+  const upcomingAssignments = visibleSchoolAssignments
+    .filter(a => a.status !== 'COMPLETED' && a.dueDate)
+    .slice(0, 10)
+
+  const pendingAssignments = visibleSchoolAssignments.filter(a => a.status !== 'COMPLETED').length
+  const completedAssignments = visibleSchoolAssignments.filter(a => a.status === 'COMPLETED').length
+  const dueThisWeek = visibleSchoolAssignments.filter(a => {
+    if (!a.dueDate || a.status === 'COMPLETED') return false
+    const due = new Date(a.dueDate)
+    const now = new Date()
+    const week = new Date()
+    week.setDate(now.getDate() + 7)
+    return due >= now && due <= week
+  }).length
+
+  const getCourseById = (courseId: string) => data?.courses.find(c => c.id === courseId)
 
   const handleLogout = () => {
     logout()
@@ -37,279 +344,218 @@ export default function NewDashboard() {
 
   const handleToggleAssignment = async (assignment: Assignment) => {
     if (!data) return
-
-    const newStatus = assignment.status === 'COMPLETED' ? 'NOT_STARTED' : 'COMPLETED'
-
     try {
-      const updated = await updateAssignment(assignment.id, { status: newStatus })
-      setData({
-        ...data,
-        assignments: data.assignments.map(a =>
-          a.id === assignment.id ? updated.assignment : a
-        ),
-      })
+      const next = assignment.status === 'COMPLETED' ? 'NOT_STARTED' : 'COMPLETED'
+      const updated = await updateAssignment(assignment.id, { status: next })
+      setData({ ...data, assignments: data.assignments.map(a => (a.id === assignment.id ? updated.assignment : a)) })
     } catch (err) {
-      console.error('Failed to update assignment:', err)
+      setError(err instanceof Error ? err.message : 'Failed to update assignment')
     }
   }
 
-  const getCourseById = (courseId: string) => {
-    return data?.courses.find(c => c.id === courseId)
+  const handleCreateCourse = async () => {
+    if (!data || !courseName.trim()) return
+    setSaving(true)
+    setError('')
+    try {
+      const result = await createCourse(courseName.trim(), courseColor.trim() || undefined)
+      setData({ ...data, courses: [result.course, ...data.courses] })
+      setCourseName('')
+      setCourseColor('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create course')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const filteredAssignments = data?.assignments.filter(a => {
-    if (!searchQuery) return true
-    const course = getCourseById(a.courseId)
-    return (
-      a.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      a.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      course?.name.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-  })
-
-  const upcomingAssignments = filteredAssignments
-    ?.filter(a => a.status !== 'COMPLETED' && a.dueDate)
-    .sort((a, b) => {
-      if (!a.dueDate || !b.dueDate) return 0
-      return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()
-    })
-    .slice(0, 10)
-
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <p className="text-muted-foreground">Loading...</p>
-      </div>
-    )
+  const handleCreateAssignment = async () => {
+    if (!data || !assignmentTitle.trim() || !assignmentCourseId) return
+    setSaving(true)
+    setError('')
+    try {
+      const result = await createAssignment({
+        title: assignmentTitle.trim(),
+        courseId: assignmentCourseId,
+        dueDate: assignmentDueDate || undefined,
+        type: assignmentType,
+      })
+      setData({ ...data, assignments: [result.assignment, ...data.assignments] })
+      setAssignmentTitle('')
+      setAssignmentDueDate('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create assignment')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  if (!data) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <p className="text-muted-foreground">Failed to load dashboard</p>
-      </div>
-    )
-  }
+  const monthDays = useMemo(() => {
+    const first = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1)
+    const startWeekday = (first.getDay() + 6) % 7
+    const daysInMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 0).getDate()
+    const cells: Array<{ key: string; date: Date | null }> = []
+    for (let i = 0; i < startWeekday; i += 1) cells.push({ key: `empty-${i}`, date: null })
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const date = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), d)
+      cells.push({ key: formatDateKey(date), date })
+    }
+    return cells
+  }, [calendarMonth])
+
+  if (loading) return <div className='min-h-screen flex items-center justify-center bg-background text-muted-foreground'>Loading...</div>
+  if (!data) return <div className='min-h-screen flex items-center justify-center bg-background text-muted-foreground'>Failed to load dashboard</div>
 
   return (
-    <div className="min-h-screen bg-[#1a1a1a] flex">
-      {/* Sidebar */}
-      <aside className="w-80 bg-black rounded-2xl m-4 p-4 flex flex-col gap-4">
-        {/* Branding */}
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-8 h-8 bg-neutral-900 rounded flex items-center justify-center">
-            <div className="w-4 h-4 bg-white rounded-sm"></div>
-          </div>
-          <span className="font-semibold text-base">ATLAS</span>
+    <div className='min-h-screen bg-[#1a1a1a] text-neutral-50 flex'>
+      <aside className='w-80 bg-black rounded-2xl m-4 p-4 flex flex-col gap-4 border border-neutral-900'>
+        <div className='flex items-center gap-2 px-2'>
+          <div className='w-8 h-8 bg-neutral-900 rounded flex items-center justify-center'><div className='w-4 h-4 bg-white rounded-sm' /></div>
+          <span className='font-semibold text-base'>ATLAS School OS</span>
         </div>
-
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-neutral-400" />
-          <Input
-            placeholder="Search"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-10 bg-black border-neutral-800"
-          />
+        <div className='relative'>
+          <Search className='absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400' />
+          <Input placeholder='Search school assignments, courses...' value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className='pl-10 bg-black border-neutral-800' />
         </div>
-
-        {/* Navigation */}
-        <nav className="flex-1 space-y-1">
-          <Button
-            variant={activeView === 'dashboard' ? 'secondary' : 'ghost'}
-            className="w-full justify-start"
-            onClick={() => setActiveView('dashboard')}
-          >
-            <Home className="w-4 h-4 mr-2" />
-            Dashboard
-          </Button>
-          <Button
-            variant={activeView === 'courses' ? 'secondary' : 'ghost'}
-            className="w-full justify-start"
-            onClick={() => setActiveView('courses')}
-          >
-            <BookOpen className="w-4 h-4 mr-2" />
-            Courses
-          </Button>
-          <Button
-            variant={activeView === 'calendar' ? 'secondary' : 'ghost'}
-            className="w-full justify-start"
-            onClick={() => setActiveView('calendar')}
-          >
-            <Calendar className="w-4 h-4 mr-2" />
-            Calendar
-          </Button>
+        <nav className='flex-1 space-y-1 overflow-y-auto pr-1'>
+          {NAV_ITEMS.map(({ id, icon: Icon, label }) => (
+            <Button key={id} variant={activeView === id ? 'secondary' : 'ghost'} className='w-full justify-start' onClick={() => setActiveView(id)}>
+              <Icon className='w-4 h-4 mr-2' />{label}
+            </Button>
+          ))}
         </nav>
-
-        {/* Divider */}
-        <div className="h-px bg-neutral-800" />
-
-        {/* User Profile */}
-        <div className="flex items-center justify-between px-2 py-2 rounded hover:bg-neutral-900 cursor-pointer">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-black border border-neutral-800 rounded-full flex items-center justify-center">
-              <User className="w-4 h-4" />
-            </div>
-            <span className="text-sm">{data.user.name || data.user.email}</span>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={handleLogout}
-          >
-            <MoreHorizontal className="w-4 h-4" />
-          </Button>
+        <div className='h-px bg-neutral-800' />
+        <div className='flex items-center justify-between px-2 py-2 rounded hover:bg-neutral-900'>
+          <div className='flex items-center gap-2'><div className='w-8 h-8 bg-black border border-neutral-800 rounded-full flex items-center justify-center'><User className='w-4 h-4' /></div><span className='text-sm'>{data.user.name || data.user.email}</span></div>
+          <Button variant='ghost' size='icon' className='h-8 w-8' onClick={handleLogout} title='Log out'><LogOut className='w-4 h-4' /></Button>
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 p-8 overflow-y-auto">
-        {activeView === 'dashboard' && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h1 className="text-3xl font-light">Dashboard</h1>
-              <Button onClick={() => {/* TODO: Open add assignment modal */}}>
-                <Plus className="w-4 h-4 mr-2" />
-                New Assignment
-              </Button>
-            </div>
+      <main className='flex-1 p-8 overflow-y-auto space-y-6'>
+        {error && <div className='p-3 rounded-lg bg-red-500/10 text-red-300 border border-red-500/20'>{error}</div>}
 
-            {/* Stats Cards */}
-            <div className="grid grid-cols-3 gap-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-normal text-muted-foreground">
-                    Active Courses
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-3xl font-light">{data.courses.filter(c => c.enabled).length}</p>
+        {activeView === 'overview' && (
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Overview</h1><Button onClick={() => setActiveView('assignments')}><Plus className='w-4 h-4 mr-2' />New School Assignment</Button></div>
+            <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4'>
+              <Card><CardHeader><CardTitle className='text-sm font-normal text-neutral-400'>Active Courses</CardTitle></CardHeader><CardContent><p className='text-3xl font-light'>{data.courses.filter(c => c.enabled).length}</p></CardContent></Card>
+              <Card><CardHeader><CardTitle className='text-sm font-normal text-neutral-400'>Pending School Assignments</CardTitle></CardHeader><CardContent><p className='text-3xl font-light'>{pendingAssignments}</p></CardContent></Card>
+              <Card><CardHeader><CardTitle className='text-sm font-normal text-neutral-400'>Completed School Assignments</CardTitle></CardHeader><CardContent><p className='text-3xl font-light'>{completedAssignments}</p></CardContent></Card>
+              <Card><CardHeader><CardTitle className='text-sm font-normal text-neutral-400'>Due In 7 Days</CardTitle></CardHeader><CardContent><p className='text-3xl font-light'>{dueThisWeek}</p></CardContent></Card>
+            </div>
+            <div className='grid grid-cols-1 xl:grid-cols-3 gap-4'>
+              <Card className='xl:col-span-2'>
+                <CardHeader><CardTitle className='text-xl font-light'>Upcoming School Assignments</CardTitle></CardHeader>
+                <CardContent className='space-y-3'>
+                  {upcomingAssignments.length ? upcomingAssignments.map(a => (
+                    <div key={a.id} className='flex items-center justify-between p-3 rounded-lg border border-border'>
+                      <div className='flex items-center gap-3'>
+                        <input type='checkbox' checked={a.status === 'COMPLETED'} onChange={() => handleToggleAssignment(a)} className='w-4 h-4 rounded border-neutral-800' />
+                        <div><p className={cn('font-medium', a.status === 'COMPLETED' && 'line-through text-muted-foreground')}>{a.title}</p><p className='text-sm text-neutral-400'>{getCourseById(a.courseId)?.name} • {a.dueDate || 'No due date'}</p></div>
+                      </div>
+                      <span className='text-xs px-2 py-1 rounded-full bg-neutral-900'>{a.type}</span>
+                    </div>
+                  )) : <p className='text-neutral-400 text-center py-8'>No upcoming assignments in the last 2-week window</p>}
                 </CardContent>
               </Card>
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-normal text-muted-foreground">
-                    Pending Assignments
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-3xl font-light">
-                    {data.assignments.filter(a => a.status !== 'COMPLETED').length}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-normal text-muted-foreground">
-                    Completed
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-3xl font-light">
-                    {data.assignments.filter(a => a.status === 'COMPLETED').length}
-                  </p>
+                <CardHeader><CardTitle className='text-xl font-light'>Today</CardTitle></CardHeader>
+                <CardContent className='space-y-3'>
+                  <div className='flex items-center justify-between rounded-lg border border-neutral-800 p-3'><span>Personal Todos</span><span className='text-neutral-300'>{todos.filter(t => !t.done).length} open</span></div>
+                  <div className='flex items-center justify-between rounded-lg border border-neutral-800 p-3'><span>Focus block</span><Button size='sm' variant='outline' onClick={() => setActiveView('focus')}>Start</Button></div>
+                  <div className='flex items-center justify-between rounded-lg border border-neutral-800 p-3'><span>Latest note</span><span className='text-xs text-neutral-400'>{sortedNotes[0]?.title || 'None'}</span></div>
                 </CardContent>
               </Card>
             </div>
+          </>
+        )}
 
-            {/* Upcoming Assignments */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-xl font-light">Upcoming Assignments</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {upcomingAssignments && upcomingAssignments.length > 0 ? (
-                  <div className="space-y-3">
-                    {upcomingAssignments.map((assignment) => {
-                      const course = getCourseById(assignment.courseId)
-                      return (
-                        <div
-                          key={assignment.id}
-                          className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-accent/50 transition-colors"
-                        >
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="checkbox"
-                              checked={assignment.status === 'COMPLETED'}
-                              onChange={() => handleToggleAssignment(assignment)}
-                              className="w-4 h-4 rounded border-neutral-800"
-                            />
-                            <div>
-                              <p className={cn(
-                                "font-medium",
-                                assignment.status === 'COMPLETED' && "line-through text-muted-foreground"
-                              )}>
-                                {assignment.title}
-                              </p>
-                              <p className="text-sm text-muted-foreground">
-                                {course?.name} • {assignment.dueDate ? new Date(assignment.dueDate).toLocaleDateString() : 'No due date'}
-                              </p>
-                            </div>
-                          </div>
-                          <span className={cn(
-                            "text-xs px-2 py-1 rounded-full",
-                            assignment.type === 'ASSIGNMENT' && "bg-blue-500/10 text-blue-500",
-                            assignment.type === 'QUIZ' && "bg-red-500/10 text-red-500",
-                            assignment.type === 'MATERIAL' && "bg-green-500/10 text-green-500"
-                          )}>
-                            {assignment.type}
-                          </span>
-                        </div>
-                      )
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-muted-foreground text-center py-8">
-                    No upcoming assignments
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+        {activeView === 'planner' && (
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Planner Board</h1><select className='h-10 rounded-md border border-input bg-background px-3' value={schoolSort} onChange={e => setSchoolSort(e.target.value as typeof schoolSort)}><option value='due-asc'>Sort: Due date ascending</option><option value='due-desc'>Sort: Due date descending</option><option value='created-desc'>Sort: Newest created</option><option value='title-asc'>Sort: Title A-Z</option></select></div>
+            <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
+              {(['NOT_STARTED', 'IN_PROGRESS', 'COMPLETED'] as Assignment['status'][]).map(status => (
+                <Card key={status}><CardHeader><CardTitle className='text-lg font-normal'>{status.replace('_', ' ')}</CardTitle></CardHeader><CardContent className='space-y-3'>{plannerBuckets[status].map(a => <div key={a.id} className='border border-neutral-800 rounded-lg p-3'><p className='font-medium'>{a.title}</p><p className='text-xs text-neutral-400'>{getCourseById(a.courseId)?.name}</p></div>)}</CardContent></Card>
+              ))}
+            </div>
+          </>
         )}
 
         {activeView === 'courses' && (
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h1 className="text-3xl font-light">Courses</h1>
-              <Button onClick={() => {/* TODO: Open add course modal */}}>
-                <Plus className="w-4 h-4 mr-2" />
-                New Course
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-4">
-              {data.courses.map((course) => (
-                <Card key={course.id}>
-                  <CardHeader>
-                    <CardTitle className="text-lg font-normal">{course.name}</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground">
-                      {data.assignments.filter(a => a.courseId === course.id).length} assignments
-                    </p>
-                  </CardContent>
-                </Card>
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Courses</h1><select className='h-10 rounded-md border border-input bg-background px-3' value={courseSort} onChange={e => setCourseSort(e.target.value as typeof courseSort)}><option value='name-asc'>Sort: Name A-Z</option><option value='name-desc'>Sort: Name Z-A</option><option value='created-desc'>Sort: Newest created</option></select></div>
+            <Card><CardHeader><CardTitle className='text-lg font-normal'>Create Course</CardTitle></CardHeader><CardContent className='grid grid-cols-1 md:grid-cols-4 gap-3'><Input placeholder='Course name' value={courseName} onChange={e => setCourseName(e.target.value)} /><Input placeholder='Color (optional)' value={courseColor} onChange={e => setCourseColor(e.target.value)} /><Button disabled={saving || !courseName.trim()} onClick={handleCreateCourse}><Plus className='w-4 h-4 mr-2' />Add</Button></CardContent></Card>
+            <div className='grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4'>
+              {sortedCourses.map(course => (
+                <Card key={course.id}><CardHeader><CardTitle className='text-lg font-normal flex items-center justify-between'>{course.name}<span className='inline-block w-3 h-3 rounded-full border border-neutral-700' style={{ backgroundColor: course.color || '#3f3f46' }} /></CardTitle></CardHeader><CardContent className='space-y-3'><p className='text-sm text-neutral-400'>{visibleSchoolAssignments.filter(a => a.courseId === course.id).length} assignments</p><div className='flex gap-2'><Button size='sm' variant={course.enabled ? 'secondary' : 'outline'} onClick={async () => { const res = await updateCourse(course.id, { enabled: !course.enabled }); setData(prev => prev ? ({ ...prev, courses: prev.courses.map(c => c.id === course.id ? res.course : c) }) : prev) }}>{course.enabled ? 'Enabled' : 'Disabled'}</Button><Button size='sm' variant='destructive' onClick={async () => { await deleteCourse(course.id); setData(prev => prev ? ({ ...prev, courses: prev.courses.filter(c => c.id !== course.id), assignments: prev.assignments.filter(a => a.courseId !== course.id) }) : prev) }}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div></CardContent></Card>
               ))}
-              {data.courses.length === 0 && (
-                <div className="col-span-3 text-center py-12 text-muted-foreground">
-                  No courses yet. Create one to get started.
-                </div>
-              )}
+            </div>
+          </>
+        )}
+
+        {activeView === 'assignments' && (
+          <>
+            <h1 className='text-3xl font-light'>Assignments</h1>
+            <Card><CardHeader><CardTitle className='text-lg font-normal'>Create School Assignment</CardTitle></CardHeader><CardContent className='grid grid-cols-1 md:grid-cols-5 gap-3'><Input placeholder='Assignment title' value={assignmentTitle} onChange={e => setAssignmentTitle(e.target.value)} /><select className='h-10 rounded-md border border-input bg-background px-3' value={assignmentCourseId} onChange={e => setAssignmentCourseId(e.target.value)}><option value=''>Select course</option>{data.courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><Input type='date' value={assignmentDueDate} onChange={e => setAssignmentDueDate(e.target.value)} /><select className='h-10 rounded-md border border-input bg-background px-3' value={assignmentType} onChange={e => setAssignmentType(e.target.value as Assignment['type'])}><option value='ASSIGNMENT'>Assignment</option><option value='QUIZ'>Quiz</option><option value='MATERIAL'>Material</option><option value='ANNOUNCEMENT'>Announcement</option></select><Button disabled={saving || !assignmentTitle.trim() || !assignmentCourseId} onClick={handleCreateAssignment}><Plus className='w-4 h-4 mr-2' />Add</Button></CardContent></Card>
+            <div className='grid grid-cols-1 xl:grid-cols-2 gap-4'>
+              <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>School Assignments</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={schoolSort} onChange={e => setSchoolSort(e.target.value as typeof schoolSort)}><option value='due-asc'>Due asc</option><option value='due-desc'>Due desc</option><option value='created-desc'>Newest</option><option value='title-asc'>Title A-Z</option></select></CardTitle></CardHeader><CardContent className='space-y-3'>{visibleSchoolAssignments.map(a => <div key={a.id} className='border border-neutral-800 rounded-lg p-3 flex items-center justify-between gap-3'><div><p className='font-medium'>{a.title}</p><p className='text-xs text-neutral-400'>{getCourseById(a.courseId)?.name} • {a.dueDate || 'No due date'} • {a.type}</p></div><div className='flex items-center gap-2'><Button size='sm' variant='outline' onClick={() => handleToggleAssignment(a)}>{a.status === 'COMPLETED' ? 'Reopen' : 'Complete'}</Button><Button size='sm' variant='destructive' onClick={async () => { await deleteAssignment(a.id); setData(prev => prev ? ({ ...prev, assignments: prev.assignments.filter(x => x.id !== a.id) }) : prev) }}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div></div>)}</CardContent></Card>
+              <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>Personal Todo Items</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={todoSort} onChange={e => setTodoSort(e.target.value as typeof todoSort)}><option value='created-desc'>Newest</option><option value='title-asc'>Title A-Z</option><option value='status'>Status</option></select></CardTitle></CardHeader><CardContent className='space-y-3'><div className='flex gap-2'><Input placeholder='Add personal todo' value={todoTitle} onChange={e => setTodoTitle(e.target.value)} /><Button onClick={() => { if (!todoTitle.trim()) return; setTodos(prev => [{ id: crypto.randomUUID(), title: todoTitle.trim(), done: false, createdAt: new Date().toISOString() }, ...prev]); setTodoTitle('') }}>Add</Button></div>{sortedTodos.map(todo => <div key={todo.id} className='border border-neutral-800 rounded-lg p-3 flex items-center justify-between gap-2'><label className='flex items-center gap-2'><input type='checkbox' checked={todo.done} onChange={() => setTodos(prev => prev.map(t => t.id === todo.id ? { ...t, done: !t.done } : t))} /><span className={cn(todo.done && 'line-through text-neutral-500')}>{todo.title}</span></label><Button size='sm' variant='destructive' onClick={() => setTodos(prev => prev.filter(t => t.id !== todo.id))}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div>)}</CardContent></Card>
+            </div>
+          </>
+        )}
+
+        {activeView === 'calendar' && (
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Calendar</h1><div className='flex gap-2'><Button variant='outline' onClick={() => setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1))}>Prev</Button><div className='px-3 py-2 border border-neutral-800 rounded-md'>{calendarMonth.toLocaleString(undefined, { month: 'long', year: 'numeric' })}</div><Button variant='outline' onClick={() => setCalendarMonth(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1))}>Next</Button></div></div>
+            <Card><CardContent className='py-6'><div className='grid grid-cols-7 gap-2 text-xs text-neutral-400 mb-2'>{['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d => <div key={d} className='text-center'>{d}</div>)}</div><div className='grid grid-cols-7 gap-2'>{monthDays.map(cell => {
+              if (!cell.date) return <div key={cell.key} className='h-24 rounded border border-transparent' />
+              const dateKey = formatDateKey(cell.date)
+              const count = (assignmentsByDate.get(dateKey) ?? []).length
+              const selected = selectedDateKey === dateKey
+              return <button key={cell.key} onClick={() => setSelectedDateKey(dateKey)} className={cn('h-24 rounded border p-2 text-left', selected ? 'border-neutral-200 bg-neutral-900' : 'border-neutral-800 bg-black hover:bg-neutral-900')}><div className='text-sm'>{cell.date.getDate()}</div><div className='text-xs text-neutral-400 mt-2'>{count ? `${count} item${count > 1 ? 's' : ''}` : ''}</div></button>
+            })}</div></CardContent></Card>
+            <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>{new Date(selectedDateKey).toDateString()}</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={calendarSort} onChange={e => setCalendarSort(e.target.value as typeof calendarSort)}><option value='title-asc'>Title A-Z</option><option value='status'>Status</option></select></CardTitle></CardHeader><CardContent className='space-y-2'>{selectedDateAssignments.length ? selectedDateAssignments.map(a => <div key={a.id} className='flex items-center justify-between text-sm border border-neutral-800 rounded p-2'><span>{a.title}</span><span className='text-neutral-500'>{a.status.replace('_', ' ')}</span></div>) : <p className='text-neutral-400'>No school assignments due this day.</p>}</CardContent></Card>
+          </>
+        )}
+
+        {activeView === 'focus' && (
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Focus Timer</h1><select className='h-10 rounded-md border border-input bg-background px-3' value={focusSort} onChange={e => setFocusSort(e.target.value as typeof focusSort)}><option value='newest'>Sort: Newest sessions</option><option value='oldest'>Sort: Oldest sessions</option><option value='minutes-desc'>Sort: Longest first</option></select></div>
+            <Card><CardContent className='py-8 flex flex-col items-center gap-4'><p className='text-6xl font-light'>{String(Math.floor(secondsLeft / 60)).padStart(2, '0')}:{String(secondsLeft % 60).padStart(2, '0')}</p><div className='flex gap-2'><Button onClick={() => setTimerRunning(prev => !prev)}>{timerRunning ? 'Pause' : 'Start'}</Button><Button variant='outline' onClick={() => { setTimerRunning(false); setSecondsLeft(25 * 60) }}>Reset</Button></div></CardContent></Card>
+            <Card><CardHeader><CardTitle className='text-xl font-light'>Recent Sessions</CardTitle></CardHeader><CardContent className='space-y-2'>{sortedFocusSessions.slice(0, 20).map((s, i) => <div key={`${s.startedAt}-${i}`} className='flex justify-between text-sm border-b border-neutral-900 pb-2'><span>{new Date(s.startedAt).toLocaleString()}</span><span>{s.minutes} min</span></div>)}</CardContent></Card>
+          </>
+        )}
+
+        {activeView === 'notes' && (
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Notes</h1><select className='h-10 rounded-md border border-input bg-background px-3' value={noteSort} onChange={e => setNoteSort(e.target.value as typeof noteSort)}><option value='updated-desc'>Sort: Recently updated</option><option value='title-asc'>Sort: Title A-Z</option></select></div>
+            <Card><CardContent className='py-6 space-y-3'><Input placeholder='Note title' value={noteTitle} onChange={e => setNoteTitle(e.target.value)} /><textarea className='w-full min-h-28 rounded-md border border-input bg-background px-3 py-2 text-sm' placeholder='Write your study note...' value={noteBody} onChange={e => setNoteBody(e.target.value)} /><Button onClick={() => { if (!noteTitle.trim()) return; setNotes(prev => [{ id: crypto.randomUUID(), title: noteTitle.trim(), body: noteBody.trim(), updatedAt: new Date().toISOString() }, ...prev]); setNoteTitle(''); setNoteBody('') }}>Save Note</Button></CardContent></Card>
+            <Card><CardContent className='py-6 space-y-3'>{sortedNotes.map(note => <div key={note.id} className='border border-neutral-800 rounded-lg p-3'><div className='flex items-center justify-between'><p className='font-medium'>{note.title}</p><Button size='sm' variant='destructive' onClick={() => setNotes(prev => prev.filter(n => n.id !== note.id))}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div>{note.body && <p className='mt-2 text-sm text-neutral-300 whitespace-pre-wrap'>{note.body}</p>}<p className='mt-2 text-xs text-neutral-500'>Updated {new Date(note.updatedAt).toLocaleString()}</p></div>)}</CardContent></Card>
+          </>
+        )}
+
+        {activeView === 'goals' && (
+          <>
+            <div className='flex items-center justify-between'><h1 className='text-3xl font-light'>Goals</h1><select className='h-10 rounded-md border border-input bg-background px-3' value={goalSort} onChange={e => setGoalSort(e.target.value as typeof goalSort)}><option value='progress-desc'>Sort: Highest progress</option><option value='title-asc'>Sort: Title A-Z</option></select></div>
+            <Card><CardContent className='py-6 flex gap-3'><Input placeholder='Add goal' value={goalTitle} onChange={e => setGoalTitle(e.target.value)} /><Button onClick={() => { if (!goalTitle.trim()) return; setGoals(prev => [{ id: crypto.randomUUID(), title: goalTitle.trim(), progress: 0 }, ...prev]); setGoalTitle('') }}>Add Goal</Button></CardContent></Card>
+            <Card><CardContent className='py-6 space-y-4'>{sortedGoals.map(goal => <div key={goal.id} className='border border-neutral-800 rounded-lg p-3'><div className='flex items-center justify-between mb-2'><p className='font-medium'>{goal.title}</p><span className='text-sm text-neutral-300'>{goal.progress}%</span></div><input type='range' min={0} max={100} value={goal.progress} onChange={e => setGoals(prev => prev.map(g => g.id === goal.id ? { ...g, progress: Number(e.target.value) } : g))} className='w-full' /></div>)}</CardContent></Card>
+          </>
+        )}
+
+        {activeView === 'insights' && (
+          <div className='space-y-6'>
+            <h1 className='text-3xl font-light'>Insights</h1>
+            <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
+              <Card><CardHeader><CardTitle className='text-lg font-normal'>School Assignment Completion</CardTitle></CardHeader><CardContent><div className='h-3 w-full bg-neutral-900 rounded-full overflow-hidden'><div className='h-full bg-emerald-500' style={{ width: `${Math.round((completedAssignments / Math.max(1, visibleSchoolAssignments.length)) * 100)}%` }} /></div><p className='text-sm text-neutral-400 mt-2'>{completedAssignments}/{visibleSchoolAssignments.length} completed</p></CardContent></Card>
+              <Card><CardHeader><CardTitle className='text-lg font-normal'>Focus Minutes</CardTitle></CardHeader><CardContent><p className='text-4xl font-light'>{focusSessions.reduce((sum, s) => sum + s.minutes, 0)}</p><p className='text-sm text-neutral-400 mt-2'>Total completed Pomodoro minutes</p></CardContent></Card>
             </div>
           </div>
         )}
 
-        {activeView === 'calendar' && (
-          <div className="space-y-6">
-            <h1 className="text-3xl font-light">Calendar</h1>
-            <Card>
-              <CardContent className="py-12 text-center text-muted-foreground">
-                Calendar view coming soon
-              </CardContent>
-            </Card>
+        {activeView === 'settings' && (
+          <div className='space-y-6'>
+            <h1 className='text-3xl font-light'>Settings</h1>
+            <Card><CardContent className='py-6 space-y-3'><p className='text-sm text-neutral-400'>Account</p><p>Name: {data.user.name || 'Not set'}</p><p>Email: {data.user.email}</p>{data.user.email.toLowerCase() === '9961749@bedfordnhk12.net' && <Button variant='secondary' onClick={() => navigate('/admin')}>Open Admin Console</Button>}<Button variant='destructive' onClick={handleLogout}>Log out</Button></CardContent></Card>
           </div>
         )}
       </main>

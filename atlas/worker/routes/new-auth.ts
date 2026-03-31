@@ -67,6 +67,9 @@ export async function handleRegister(context: ApiContext) {
           email,
           name: body.name || null,
           timezone: context.request.headers.get('CF-Timezone') ?? 'UTC',
+          setupCompleted: false,
+          appScriptUrl: null,
+          setupCompletedAt: null,
           createdAt: now,
           lastLoginAt: now,
         },
@@ -159,13 +162,66 @@ export async function handleGetProfile(context: ApiContext) {
     return json({ error: 'Unauthorized' }, 401)
   }
 
+  const setupCompleted = context.user.data.profile.setupCompleted ?? false
+  const appScriptUrl = context.user.data.profile.appScriptUrl ?? null
+
   return json({
     user: {
       id: context.user.userId,
       email: context.user.email,
       name: context.user.data.profile.name,
       timezone: context.user.data.profile.timezone,
+      setupCompleted,
+      appScriptUrl,
       createdAt: context.user.data.profile.createdAt,
     },
+  })
+}
+
+export async function handleCompleteSetup(context: ApiContext) {
+  if (!context.user) {
+    return json({ error: 'Unauthorized' }, 401)
+  }
+
+  if (context.request.method !== 'POST') {
+    return json({ error: 'Method not allowed' }, 405)
+  }
+
+  const body = (await context.request.json().catch(() => ({}))) as {
+    checklistConfirmed?: boolean
+  }
+  if (!body.checklistConfirmed) {
+    return json({ error: 'Please confirm all setup steps before continuing' }, 400)
+  }
+
+  const hasInitialSync = context.user.data.syncLog.some(entry => entry.action === 'CLASSROOM_SYNC')
+  if (!hasInitialSync) {
+    return json({ error: 'Run your Apps Script initial sync first, then try again' }, 400)
+  }
+
+  context.user.data.profile.setupCompleted = true
+  context.user.data.profile.appScriptUrl = context.user.data.profile.appScriptUrl ?? null
+  context.user.data.profile.setupCompletedAt = new Date().toISOString()
+  context.user.updatedAt = new Date().toISOString()
+  await kvPutJson(context.env.ATLAS_KV, userKey(context.user.userId), context.user)
+
+  return json({ ok: true })
+}
+
+export async function handleVerifyInitialSync(context: ApiContext) {
+  if (!context.user) {
+    return json({ error: 'Unauthorized' }, 401)
+  }
+
+  const latestSync = [...context.user.data.syncLog]
+    .reverse()
+    .find(entry => entry.action === 'CLASSROOM_SYNC')
+
+  return json({
+    verified: Boolean(latestSync),
+    lastSyncAt: latestSync?.timestamp ?? null,
+    details: latestSync?.details ?? null,
+    courses: context.user.data.courses.length,
+    assignments: context.user.data.assignments.length,
   })
 }

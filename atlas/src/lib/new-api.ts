@@ -36,6 +36,8 @@ export type User = {
   id: string
   email: string
   name: string | null
+  setupCompleted?: boolean
+  appScriptUrl?: string | null
 }
 
 export type Assignment = {
@@ -83,6 +85,36 @@ export type DashboardResponse = {
   syncLog: SyncLogEntry[]
 }
 
+export type AdminUserSummary = {
+  userId: string
+  email: string
+  name: string | null
+  courses: number
+  assignments: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type AdminUserRecord = {
+  userId: string
+  email: string
+  passwordHash: string
+  data: {
+    profile: {
+      email: string
+      name: string | null
+      timezone: string
+      createdAt: string
+      lastLoginAt: string
+    }
+    courses: Course[]
+    assignments: Assignment[]
+    syncLog: SyncLogEntry[]
+  }
+  createdAt: string
+  updatedAt: string
+}
+
 // Auth API
 export async function register(email: string, password: string, name?: string) {
   const response = await request<RegisterResponse>(
@@ -116,6 +148,23 @@ export function logout() {
 
 export function getProfile() {
   return request<{ user: User }>('/api/profile')
+}
+
+export function completeSetup(data: { checklistConfirmed: boolean }) {
+  return request<{ ok: true }>('/api/setup/complete', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function verifyInitialSync() {
+  return request<{
+    verified: boolean
+    lastSyncAt: string | null
+    details: string | null
+    courses: number
+    assignments: number
+  }>('/api/setup/verify-initial-sync')
 }
 
 // Dashboard API
@@ -178,4 +227,33 @@ export function deleteAssignment(id: string) {
 
 export function getPublicApiUrl(path: string) {
   return getApiUrl(path)
+}
+
+// Admin API
+export function adminListUsers() {
+  return request<{ users: AdminUserSummary[] }>('/api/admin/users')
+}
+
+export function adminGetUser(userId: string) {
+  return request<{ user: AdminUserRecord }>(`/api/admin/user?userId=${encodeURIComponent(userId)}`)
+}
+
+export function adminUpdateUser(user: AdminUserRecord) {
+  return request<{ user: AdminUserRecord }>('/api/admin/user', {
+    method: 'PATCH',
+    body: JSON.stringify({ user }),
+  })
+}
+
+export function adminDeleteUser(userId: string) {
+  return request<{ ok: true; deletedApiKeys: number }>(
+    `/api/admin/user?userId=${encodeURIComponent(userId)}`,
+    { method: 'DELETE' }
+  )
+}
+
+export function adminClearNamespace() {
+  return request<{ ok: true; deleted: number }>('/api/admin/kv/clear', {
+    method: 'POST',
+  })
 }

@@ -1,12 +1,19 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "atlas",
+  "main": "atlas/worker/index.ts",
   "compatibility_date": "2025-09-27",
   "observability": {
     "enabled": true
   },
   "assets": {
     "directory": "atlas/dist/client",
+    "run_worker_first": [
+      "/api/*",
+      "/update",
+      "/update/*",
+      "/health"
+    ],
     "not_found_handling": "single-page-application"
   },
   "build": {
@@ -14,5 +21,15 @@
   },
   "compatibility_flags": [
     "nodejs_compat"
+  ],
+  "vars": {
+    "NOTION_CLIENT_ID": "REPLACE_WITH_NOTION_CLIENT_ID",
+    "NOTION_REDIRECT_URI": "REPLACE_WITH_NOTION_REDIRECT_URI"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "ATLAS_KV",
+      "id": "REPLACE_WITH_ATLAS_KV_NAMESPACE_ID"
+    }
   ]
 }

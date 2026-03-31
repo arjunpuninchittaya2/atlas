@@ -33,6 +33,9 @@ export type UserData = {
     email: string
     name: string | null
     timezone: string
+    setupCompleted: boolean
+    appScriptUrl: string | null
+    setupCompletedAt: string | null
     createdAt: string
     lastLoginAt: string
   }
