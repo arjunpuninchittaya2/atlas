@@ -23,7 +23,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   createAssignment,
   createCourse,
-  deleteAssignment,
   deleteCourse,
   getDashboard,
   logout,
@@ -137,17 +136,12 @@ function isWithinTwoWeeks(assignment: Assignment) {
 export default function NewDashboard() {
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [activeView, setActiveView] = useState<ViewId>('overview')
+  const [activeView, setActiveView] = useState<ViewId>('assignments')
   const [searchQuery, setSearchQuery] = useState('')
   const [courseName, setCourseName] = useState('')
   const [courseColor, setCourseColor] = useState('')
-  const [assignmentTitle, setAssignmentTitle] = useState('')
-  const [assignmentCourseId, setAssignmentCourseId] = useState('')
-  const [assignmentDueDate, setAssignmentDueDate] = useState('')
-  const [assignmentType, setAssignmentType] = useState<Assignment['type']>('ASSIGNMENT')
   const [noteTitle, setNoteTitle] = useState('')
   const [noteBody, setNoteBody] = useState('')
-  const [todoTitle, setTodoTitle] = useState('')
   const [goalTitle, setGoalTitle] = useState('')
   const [notes, setNotes] = useState<Note[]>([])
   const [todos, setTodos] = useState<TodoItem[]>([])
@@ -160,7 +154,7 @@ export default function NewDashboard() {
 
   const [courseSort, setCourseSort] = useState<'name-asc' | 'name-desc' | 'created-desc'>('name-asc')
   const [schoolSort, setSchoolSort] = useState<'due-asc' | 'due-desc' | 'created-desc' | 'title-asc'>('due-asc')
-  const [todoSort, setTodoSort] = useState<'created-desc' | 'title-asc' | 'status'>('created-desc')
+  const [mainDueSort, setMainDueSort] = useState<'due-asc' | 'due-desc'>('due-asc')
   const [noteSort, setNoteSort] = useState<'updated-desc' | 'title-asc'>('updated-desc')
   const [goalSort, setGoalSort] = useState<'progress-desc' | 'title-asc'>('progress-desc')
   const [focusSort, setFocusSort] = useState<'newest' | 'oldest' | 'minutes-desc'>('newest')
@@ -250,16 +244,6 @@ export default function NewDashboard() {
     return arr
   }, [data, courseSort])
 
-  const sortedTodos = useMemo(() => {
-    const arr = [...todos]
-    arr.sort((a, b) => {
-      if (todoSort === 'title-asc') return a.title.localeCompare(b.title)
-      if (todoSort === 'status') return Number(a.done) - Number(b.done)
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    })
-    return arr
-  }, [todos, todoSort])
-
   const sortedNotes = useMemo(() => {
     const arr = [...notes]
     arr.sort((a, b) => {
@@ -307,6 +291,24 @@ export default function NewDashboard() {
     })
     return arr
   }, [assignmentsByDate, selectedDateKey, calendarSort])
+
+  const mainAssignmentRows = useMemo(() => {
+    const cutoff = toStartOfDay(new Date())
+    cutoff.setDate(cutoff.getDate() - 2)
+
+    const rows = (data?.assignments ?? []).filter(assignment => {
+      if (assignment.type !== 'ASSIGNMENT' || !assignment.dueDate) return false
+      return toStartOfDay(new Date(assignment.dueDate)) >= cutoff
+    })
+
+    rows.sort((a, b) => {
+      const da = new Date(a.dueDate as string).getTime()
+      const db = new Date(b.dueDate as string).getTime()
+      return mainDueSort === 'due-desc' ? db - da : da - db
+    })
+
+    return rows
+  }, [data, mainDueSort])
 
   const plannerBuckets = useMemo(() => {
     const result: Record<Assignment['status'], Assignment[]> = {
@@ -369,20 +371,25 @@ export default function NewDashboard() {
     }
   }
 
-  const handleCreateAssignment = async () => {
-    if (!data || !assignmentTitle.trim() || !assignmentCourseId) return
+  const handleCreateAssignmentFromMainList = async () => {
+    if (!data) return
+    const defaultCourseId = data.courses.find(course => course.enabled)?.id ?? data.courses[0]?.id
+    if (!defaultCourseId) {
+      setError('No courses available. Create a course before adding an assignment')
+      return
+    }
+
     setSaving(true)
     setError('')
     try {
       const result = await createAssignment({
-        title: assignmentTitle.trim(),
-        courseId: assignmentCourseId,
-        dueDate: assignmentDueDate || undefined,
-        type: assignmentType,
+        title: 'Untitled assignment',
+        courseId: defaultCourseId,
+        dueDate: formatDateKey(new Date()),
+        type: 'ASSIGNMENT',
       })
       setData({ ...data, assignments: [result.assignment, ...data.assignments] })
-      setAssignmentTitle('')
-      setAssignmentDueDate('')
+      setActiveView('assignments')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create assignment')
     } finally {
@@ -496,11 +503,64 @@ export default function NewDashboard() {
         {activeView === 'assignments' && (
           <>
             <h1 className='text-3xl font-light'>Assignments</h1>
-            <Card><CardHeader><CardTitle className='text-lg font-normal'>Create School Assignment</CardTitle></CardHeader><CardContent className='grid grid-cols-1 md:grid-cols-5 gap-3'><Input placeholder='Assignment title' value={assignmentTitle} onChange={e => setAssignmentTitle(e.target.value)} /><select className='h-10 rounded-md border border-input bg-background px-3' value={assignmentCourseId} onChange={e => setAssignmentCourseId(e.target.value)}><option value=''>Select course</option>{data.courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><Input type='date' value={assignmentDueDate} onChange={e => setAssignmentDueDate(e.target.value)} /><select className='h-10 rounded-md border border-input bg-background px-3' value={assignmentType} onChange={e => setAssignmentType(e.target.value as Assignment['type'])}><option value='ASSIGNMENT'>Assignment</option><option value='QUIZ'>Quiz</option><option value='MATERIAL'>Material</option><option value='ANNOUNCEMENT'>Announcement</option></select><Button disabled={saving || !assignmentTitle.trim() || !assignmentCourseId} onClick={handleCreateAssignment}><Plus className='w-4 h-4 mr-2' />Add</Button></CardContent></Card>
-            <div className='grid grid-cols-1 xl:grid-cols-2 gap-4'>
-              <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>School Assignments</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={schoolSort} onChange={e => setSchoolSort(e.target.value as typeof schoolSort)}><option value='due-asc'>Due asc</option><option value='due-desc'>Due desc</option><option value='created-desc'>Newest</option><option value='title-asc'>Title A-Z</option></select></CardTitle></CardHeader><CardContent className='space-y-3'>{visibleSchoolAssignments.map(a => <div key={a.id} className='border border-neutral-800 rounded-lg p-3 flex items-center justify-between gap-3'><div><p className='font-medium'>{a.title}</p><p className='text-xs text-neutral-400'>{getCourseById(a.courseId)?.name} • {a.dueDate || 'No due date'} • {a.type}</p></div><div className='flex items-center gap-2'><Button size='sm' variant='outline' onClick={() => handleToggleAssignment(a)}>{a.status === 'COMPLETED' ? 'Reopen' : 'Complete'}</Button><Button size='sm' variant='destructive' onClick={async () => { await deleteAssignment(a.id); setData(prev => prev ? ({ ...prev, assignments: prev.assignments.filter(x => x.id !== a.id) }) : prev) }}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div></div>)}</CardContent></Card>
-              <Card><CardHeader><CardTitle className='text-xl font-light flex items-center justify-between'><span>Personal Todo Items</span><select className='h-9 rounded-md border border-input bg-background px-2 text-sm' value={todoSort} onChange={e => setTodoSort(e.target.value as typeof todoSort)}><option value='created-desc'>Newest</option><option value='title-asc'>Title A-Z</option><option value='status'>Status</option></select></CardTitle></CardHeader><CardContent className='space-y-3'><div className='flex gap-2'><Input placeholder='Add personal todo' value={todoTitle} onChange={e => setTodoTitle(e.target.value)} /><Button onClick={() => { if (!todoTitle.trim()) return; setTodos(prev => [{ id: crypto.randomUUID(), title: todoTitle.trim(), done: false, createdAt: new Date().toISOString() }, ...prev]); setTodoTitle('') }}>Add</Button></div>{sortedTodos.map(todo => <div key={todo.id} className='border border-neutral-800 rounded-lg p-3 flex items-center justify-between gap-2'><label className='flex items-center gap-2'><input type='checkbox' checked={todo.done} onChange={() => setTodos(prev => prev.map(t => t.id === todo.id ? { ...t, done: !t.done } : t))} /><span className={cn(todo.done && 'line-through text-neutral-500')}>{todo.title}</span></label><Button size='sm' variant='destructive' onClick={() => setTodos(prev => prev.filter(t => t.id !== todo.id))}><Trash2 className='w-3 h-3 mr-1' />Delete</Button></div>)}</CardContent></Card>
-            </div>
+            <Card>
+              <CardContent className='py-4 space-y-4'>
+                <div className='flex flex-wrap items-center gap-2 text-sm'>
+                  <button
+                    type='button'
+                    onClick={() => setMainDueSort(prev => (prev === 'due-asc' ? 'due-desc' : 'due-asc'))}
+                    className='rounded-full border border-border bg-muted px-3 py-1 text-foreground'
+                  >
+                    Due Date {mainDueSort === 'due-asc' ? '↑' : '↓'}
+                  </button>
+                  <span className='rounded-full border border-border bg-muted px-3 py-1 text-foreground'>Type: ASSIGNMENT</span>
+                  <span className='rounded-full border border-border bg-muted px-3 py-1 text-foreground'>Due Date: After 2 days ago</span>
+                  <span className='text-neutral-400'>+ Filter</span>
+                </div>
+                <div className='overflow-x-auto'>
+                  <table className='w-full text-sm'>
+                    <thead>
+                      <tr className='text-neutral-400'>
+                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Course</th>
+                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Title</th>
+                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Due Date</th>
+                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Link</th>
+                        <th className='border-b border-neutral-800 px-3 py-2 text-left font-normal'>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {mainAssignmentRows.map(assignment => (
+                        <tr key={assignment.id}>
+                          <td className='border-b border-neutral-900 px-3 py-2'>{getCourseById(assignment.courseId)?.name ?? 'Unknown course'}</td>
+                          <td className='border-b border-neutral-900 px-3 py-2'>{assignment.title}</td>
+                          <td className='border-b border-neutral-900 px-3 py-2'>{assignment.dueDate}</td>
+                          <td className='border-b border-neutral-900 px-3 py-2'>
+                            {assignment.link ? (
+                              <a href={assignment.link} className='text-neutral-300 underline' target='_blank' rel='noreferrer'>Open</a>
+                            ) : (
+                              <span className='text-neutral-500'>—</span>
+                            )}
+                          </td>
+                          <td className='border-b border-neutral-900 px-3 py-2'>{assignment.status}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {!mainAssignmentRows.length && (
+                  <p className='text-sm text-neutral-400'>No assignments match the current filters.</p>
+                )}
+                <div className='flex items-center justify-center gap-2 pt-2'>
+                  <Button variant='outline' disabled>
+                    Edit filters
+                  </Button>
+                  <Button onClick={handleCreateAssignmentFromMainList} disabled={saving}>
+                    <Plus className='w-4 h-4 mr-2' />
+                    New page
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
           </>
         )}
 
